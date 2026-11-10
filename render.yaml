@@ -24,7 +24,7 @@ services:
       - key: CORS_ALLOWED_ORIGINS
         sync: false # Set to Vercel frontend URL: https://supportflow-ai.vercel.app
       - key: APP_DEMO_SEED_ENABLED
-        value: "true" # Set to "false" for strict non-demo deployments
+        value: "false" # Set to "true" or include "demo" in SPRING_PROFILES_ACTIVE only when seeding portfolio demo data
       - key: DB_POOL_MAX_SIZE
         value: "5"
       - key: DB_POOL_MIN_IDLE

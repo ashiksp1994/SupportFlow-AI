@@ -121,7 +121,7 @@ public class AnalyticsService {
 
     @Bean
     public CommandLineRunner seedDemoData(
-            @Value("${app.demo.seed-enabled:true}") boolean seedEnabled,
+            @Value("${app.demo.seed-enabled:false}") boolean seedEnabled,
             UserRepository userRepository,
             UserService userService,
             OrganisationRepository organisationRepository,

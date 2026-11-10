@@ -19,8 +19,6 @@ public record RegisterRequest(
         String email,
 
         String phone,
-        String dateOfBirth,
-        String gender,
         Long organisationId
 ) {
     public RegisterRequest(
@@ -28,9 +26,7 @@ public record RegisterRequest(
             String password,
             String fullName,
             String email,
-            String phone,
-            String dateOfBirth,
-            String gender) {
-        this(username, password, fullName, email, phone, dateOfBirth, gender, null);
+            String phone) {
+        this(username, password, fullName, email, phone, null);
     }
 }

@@ -39,15 +39,16 @@ public class JwtUtils {
         }
         boolean isProdProfile = environment != null
                 && Arrays.asList(environment.getActiveProfiles()).contains("prod");
-        if (isProdProfile && DEV_FALLBACK_SECRET.equals(secret.trim())) {
-            throw new IllegalStateException(
-                    "SECURITY ERROR: Production profile cannot start with the default development JWT_SECRET fallback.");
-        }
         byte[] keyBytes;
         try {
             keyBytes = Decoders.BASE64.decode(secret.trim());
         } catch (IllegalArgumentException ex) {
             keyBytes = secret.trim().getBytes(StandardCharsets.UTF_8);
+        }
+        String decodedAscii = new String(keyBytes, StandardCharsets.UTF_8);
+        if (isProdProfile && (DEV_FALLBACK_SECRET.equals(secret.trim()) || decodedAscii.contains("DevOnly"))) {
+            throw new IllegalStateException(
+                    "SECURITY ERROR: Production profile cannot start with a development fallback JWT_SECRET.");
         }
         if (keyBytes.length < 32) {
             throw new IllegalStateException("JWT_SECRET must be at least 256 bits (32 bytes).");

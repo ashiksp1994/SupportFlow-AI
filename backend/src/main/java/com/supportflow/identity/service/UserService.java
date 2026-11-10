@@ -86,8 +86,6 @@ public class UserService {
         user.setFullName(request.fullName());
         user.setEmail(request.email() != null ? request.email().trim() : null);
         user.setPhone(request.phone());
-        user.setDateOfBirth(request.dateOfBirth());
-        user.setGender(request.gender());
         user.setOrganisationId(request.organisationId());
         // Public registration always creates a CUSTOMER account — never trust client-supplied role.
         user.setRole(UserRole.CUSTOMER.name());
