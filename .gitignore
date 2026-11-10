@@ -1,0 +1,67 @@
+# ==============================================================================
+# SupportFlow AI — Root .gitignore
+# ==============================================================================
+
+# Environment & Secrets (NEVER commit actual secrets)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+*.crt
+credentials*.json
+*service-account*.json
+
+# Gradle & Java Build Artifacts
+.gradle/
+**/build/
+!**/src/**/build/
+!gradle/wrapper/gradle-wrapper.jar
+*.class
+*.log
+*.jar
+*.war
+*.ear
+hs_err_pid*
+replay_pid*
+
+# Node / Frontend (prepared for Phase 5)
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+coverage/
+playwright-report/
+test-results/
+
+# IDEs & Editors
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+.apt_generated/
+.sts4-cache/
+.springBeans
+nbproject/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+# OS & Temp Files
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+tmp/
+temp/

@@ -1,0 +1,48 @@
+# ==============================================================================
+# SupportFlow AI — Local Development Compose Stack (Podman & Docker Compatible)
+# Phase 1: PostgreSQL + pgvector & SupportFlow Backend
+# ==============================================================================
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: supportflow-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-supportflow}
+      POSTGRES_USER: ${POSTGRES_USER:-supportflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-supportflow_dev_only}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - supportflow_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supportflow} -d ${POSTGRES_DB:-supportflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: supportflow-backend
+    restart: unless-stopped
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    environment:
+      SERVER_PORT: 8080
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:-supportflow}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-supportflow}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-supportflow_dev_only}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+      SPRING_FLYWAY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-U3VwcG9ydEZsb3dBSURldk9ubHlKd3RTZWNyZXRLZXlNdXN0QmVSZXBsYWNlZEluUHJvZHVjdGlvbjI1NkJpdHM=}
+      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-3600000}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  supportflow_pgdata:
