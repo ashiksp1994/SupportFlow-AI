@@ -2,22 +2,15 @@ package com.supportflow.organisations;
 
 import java.util.List;
 
-import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.supportflow.audit.AuditService;
+import com.supportflow.identity.security.AccessControlService;
 
 @Service
 public class OrganisationService {
@@ -30,25 +23,42 @@ public class OrganisationService {
 
     private final OrganisationRepository organisationRepository;
     private final AuditService auditService;
+    private final AccessControlService accessControlService;
 
-    public OrganisationService(OrganisationRepository organisationRepository, AuditService auditService) {
+    public OrganisationService(
+            OrganisationRepository organisationRepository,
+            AuditService auditService,
+            AccessControlService accessControlService) {
         this.organisationRepository = organisationRepository;
         this.auditService = auditService;
+        this.accessControlService = accessControlService;
     }
 
     @Transactional(readOnly = true)
     public List<Organisation> findAll() {
+        AccessControlService.CallerContext caller = accessControlService.currentCaller();
+        if (caller.httpAuthenticated() && !caller.isAdmin() && caller.organisationId() != null) {
+            return organisationRepository.findById(caller.organisationId())
+                    .map(List::of)
+                    .orElse(List.of());
+        }
+        if (caller.httpAuthenticated() && caller.isCustomer()) {
+            return List.of();
+        }
         return organisationRepository.findAll();
     }
 
     @Transactional(readOnly = true)
     public Organisation findById(Long id) {
-        return organisationRepository.findById(id)
+        Organisation org = organisationRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Organisation not found: " + id));
+        accessControlService.verifyTenantAccess(org.getId(), null);
+        return org;
     }
 
     @Transactional
     public Organisation createOrganisation(CreateOrganisationRequest request, String actor) {
+        accessControlService.requireStaff();
         Organisation org = new Organisation();
         org.setName(request.name().trim());
         org.setDomain(request.domain().trim().toLowerCase());
@@ -72,35 +82,5 @@ public class OrganisationService {
         auditService.recordEvent("ORGANISATION_CREATED", actor, "ORGANISATION", String.valueOf(saved.getId()),
                 "Created organisation " + saved.getName() + " (" + saved.getSlaTier() + ")");
         return saved;
-    }
-
-    @RestController
-    @RequestMapping("/api/organisations")
-    public static class OrganisationController {
-
-        private final OrganisationService organisationService;
-
-        public OrganisationController(OrganisationService organisationService) {
-            this.organisationService = organisationService;
-        }
-
-        @GetMapping
-        public List<Organisation> listOrganisations() {
-            return organisationService.findAll();
-        }
-
-        @GetMapping("/{id}")
-        public Organisation getOrganisation(@PathVariable Long id) {
-            return organisationService.findById(id);
-        }
-
-        @PostMapping
-        @ResponseStatus(HttpStatus.CREATED)
-        public Organisation createOrganisation(
-                @Valid @RequestBody CreateOrganisationRequest request,
-                org.springframework.security.core.Authentication auth) {
-            String actor = auth != null ? auth.getName() : "SYSTEM";
-            return organisationService.createOrganisation(request, actor);
-        }
     }
 }

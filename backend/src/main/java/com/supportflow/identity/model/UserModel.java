@@ -40,6 +40,9 @@ public class UserModel {
     @Column(nullable = false)
     private String role = UserRole.CUSTOMER.name();
 
+    @Column(name = "organisation_id")
+    private Long organisationId;
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;

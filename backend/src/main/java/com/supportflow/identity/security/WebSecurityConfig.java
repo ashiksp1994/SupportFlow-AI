@@ -55,7 +55,7 @@ public class WebSecurityConfig {
         http.csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(authorizeRequests ->
                         authorizeRequests
-                                .requestMatchers("/api/auth/register", "/api/auth/login", "/api/auth/refresh", "/actuator/health", "/actuator/info").permitAll()
+                                .requestMatchers("/api/auth/register", "/api/auth/login", "/api/auth/refresh", "/api/auth/logout", "/actuator/health", "/actuator/info").permitAll()
                                 .anyRequest().authenticated()
                 )
                 .exceptionHandling(ex -> ex
@@ -76,8 +76,8 @@ public class WebSecurityConfig {
         config.setAllowCredentials(true);
         config.setAllowedOriginPatterns(allowedOriginPatterns);
         config.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(Arrays.asList("Authorization", "Cache-Control", "Content-Type"));
-        config.setExposedHeaders(Arrays.asList("Authorization"));
+        config.setAllowedHeaders(Arrays.asList("Authorization", "Cache-Control", "Content-Type", "X-Correlation-Id"));
+        config.setExposedHeaders(Arrays.asList("Authorization", "X-Correlation-Id"));
 
         source.registerCorsConfiguration("/**", config);
         return new CorsFilter(source);

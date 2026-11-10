@@ -14,6 +14,7 @@ import com.supportflow.customers.CustomerProfile;
 import com.supportflow.customers.CustomerService;
 import com.supportflow.organisations.Organisation;
 import com.supportflow.organisations.OrganisationService;
+import com.supportflow.storage.StorageService;
 import com.supportflow.storage.TicketAttachment;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -38,7 +39,7 @@ class CoreSupportDomainTest {
     private ConversationService conversationService;
 
     @Autowired
-    private TicketAttachment.StorageService storageService;
+    private StorageService storageService;
 
     @Test
     void shouldManageOrganisationsCustomersTicketsMessagesSlasAndAttachments() {
@@ -81,7 +82,7 @@ class CoreSupportDomainTest {
 
         TicketAttachment attachment = storageService.registerAttachment(
                 ticket.getId(),
-                new TicketAttachment.StorageService.RegisterAttachmentRequest("idp-metadata.xml", "application/xml", 4096L),
+                new StorageService.RegisterAttachmentRequest("idp-metadata.xml", "application/xml", 4096L),
                 "elena@acmecloud.io");
         assertTrue(attachment.getPresignedDownloadUrl().contains("idp-metadata.xml"));
 

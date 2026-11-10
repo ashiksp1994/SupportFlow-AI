@@ -41,6 +41,9 @@ public class KnowledgeArticle {
     @Column(name = "embedding_vector", nullable = false, columnDefinition = "TEXT")
     private String embeddingVector;
 
+    @Column(name = "organisation_id")
+    private Long organisationId;
+
     @Column(nullable = false)
     private boolean published = true;
 

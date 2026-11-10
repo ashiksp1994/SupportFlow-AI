@@ -7,8 +7,6 @@ import {
   Ticket as TicketIcon,
   Sparkles,
   BookOpen,
-  CheckCircle2,
-  XCircle,
   AlertTriangle,
   BarChart3,
   Users,
@@ -17,10 +15,10 @@ import {
   Lock,
   Bot,
   Activity,
-  Plus,
 } from 'lucide-react';
 import {
   apiRequest,
+  logoutSession,
   AuthResponse,
   DashboardAnalytics,
   Ticket,
@@ -39,6 +37,9 @@ import {
   createArticleSchema,
   CreateArticleFormValues,
 } from './lib/api';
+import { AnalyticsOverviewPanel } from './components/AnalyticsOverviewPanel';
+import { ApprovalsGovernancePanel } from './components/ApprovalsGovernancePanel';
+import { DirectoryPanel, AuditTrailPanel } from './components/DirectoryAndAuditPanels';
 
 type ActiveTab = 'dashboard' | 'tickets' | 'approvals' | 'knowledge' | 'directory' | 'audit';
 
@@ -55,7 +56,7 @@ export default function App() {
   const [kbSearchQuery, setKbSearchQuery] = useState('SAML certificate 401 signature');
   const [latestTriage, setLatestTriage] = useState<AiTriageResult | null>(null);
   const [latestRagSuggestion, setLatestRagSuggestion] = useState<RagReplySuggestion | null>(null);
-  const [latestSummary, setLatestSummary] = useState<ConversationSummaryResult | null>(null);
+  const [, setLatestSummary] = useState<ConversationSummaryResult | null>(null);
   const [showNewTicketModal, setShowNewTicketModal] = useState(false);
 
   const token = auth?.accessToken || null;
@@ -75,10 +76,16 @@ export default function App() {
     },
   });
 
+  const handleSignOut = async () => {
+    await logoutSession(auth?.accessToken || null, auth?.refreshToken || null);
+    setAuth(null);
+    queryClient.clear();
+  };
+
   const analyticsQuery = useQuery({
     queryKey: ['analytics', token],
     queryFn: () => apiRequest<DashboardAnalytics>('/api/analytics/dashboard', token),
-    enabled: Boolean(token),
+    enabled: Boolean(token && auth?.user.role !== 'CUSTOMER'),
   });
 
   const ticketsQuery = useQuery({
@@ -99,10 +106,10 @@ export default function App() {
   const approvalsQuery = useQuery({
     queryKey: ['approvals', token],
     queryFn: () => apiRequest<AiApprovalRequest[]>('/api/ai/approvals', token),
-    enabled: Boolean(token),
+    enabled: Boolean(token && auth?.user.role !== 'CUSTOMER'),
   });
 
-  const articlesQuery = useQuery({
+  useQuery({
     queryKey: ['kb-articles', token],
     queryFn: () => apiRequest<KnowledgeArticle[]>('/api/knowledge/articles', token),
     enabled: Boolean(token),
@@ -112,7 +119,7 @@ export default function App() {
     queryKey: ['kb-search', kbSearchQuery, token],
     queryFn: () =>
       apiRequest<KnowledgeSearchResult[]>(
-        `/api/knowledge/search?q=${encodeURIComponent(kbSearchQuery)}&limit=4`,
+        `/api/knowledge/search?query=${encodeURIComponent(kbSearchQuery)}&limit=4`,
         token
       ),
     enabled: Boolean(token),
@@ -184,7 +191,7 @@ export default function App() {
 
   const proposeToolMutation = useMutation({
     mutationFn: ({ ticketId, toolName }: { ticketId: number; toolName: string }) =>
-      apiRequest<AiApprovalRequest>(`/api/ai/tickets/${ticketId}/propose-action`, token, {
+      apiRequest<AiApprovalRequest>(`/api/ai/tickets/${ticketId}/approvals`, token, {
         method: 'POST',
         body: JSON.stringify({ toolName }),
       }),
@@ -304,7 +311,7 @@ export default function App() {
             </div>
 
             {authError && (
-              <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300">
+              <div role="alert" className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300">
                 {authError}
               </div>
             )}
@@ -354,7 +361,7 @@ export default function App() {
             </div>
           </div>
 
-          <nav className="flex items-center gap-1">
+          <nav className="flex items-center gap-1" aria-label="Main workspace navigation">
             {[
               { id: 'dashboard', label: 'Analytics Overview', icon: BarChart3 },
               { id: 'tickets', label: 'Ticket & AI Copilot Workspace', icon: TicketIcon },
@@ -392,7 +399,7 @@ export default function App() {
             {auth.user.fullName || auth.user.username} ({auth.user.role})
           </span>
           <button
-            onClick={() => setAuth(null)}
+            onClick={handleSignOut}
             className="text-slate-400 hover:text-slate-200 px-2 py-1 cursor-pointer"
           >
             Sign Out
@@ -403,110 +410,13 @@ export default function App() {
       {/* Main Content Area */}
       <main className="flex-1 p-6 max-w-7xl w-full mx-auto space-y-6">
         {activeTab === 'dashboard' && metrics && (
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold">Real-Time Support Operations & AI Observability</h2>
-                <p className="text-xs text-slate-400">
-                  Live metrics across SLA compliance, AI triage coverage, pgvector knowledge grounding, and human governance gates.
-                </p>
-              </div>
-              <button
-                onClick={() => {
-                  setActiveTab('tickets');
-                  setShowNewTicketModal(true);
-                }}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-medium text-white cursor-pointer"
-              >
-                <Plus className="w-4 h-4" /> New Support Ticket
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="p-5 rounded-xl bg-slate-900 border border-slate-800">
-                <span className="text-xs text-slate-400">Active Support Tickets</span>
-                <div className="text-2xl font-bold mt-1">{metrics.totalTickets}</div>
-                <div className="text-xs text-slate-400 mt-1">
-                  Open: {metrics.openTickets} · Escalated: {metrics.escalatedTickets}
-                </div>
-              </div>
-              <div className="p-5 rounded-xl bg-slate-900 border border-slate-800">
-                <span className="text-xs text-slate-400">SLA Compliance Rate</span>
-                <div className="text-2xl font-bold text-emerald-400 mt-1">
-                  {metrics.slaComplianceRatePercent}%
-                </div>
-                <div className="text-xs text-slate-400 mt-1">
-                  Breached SLAs: {metrics.slaBreachedTickets}
-                </div>
-              </div>
-              <div className="p-5 rounded-xl bg-slate-900 border border-slate-800">
-                <span className="text-xs text-slate-400">AI Triage & RAG Grounding</span>
-                <div className="text-2xl font-bold text-indigo-400 mt-1">
-                  {metrics.aiTriagedTickets} / {metrics.totalTickets}
-                </div>
-                <div className="text-xs text-slate-400 mt-1">
-                  Indexed KB Articles: {metrics.totalKnowledgeArticles}
-                </div>
-              </div>
-              <div className="p-5 rounded-xl bg-slate-900 border border-slate-800">
-                <span className="text-xs text-slate-400">Pending Human AI Approvals</span>
-                <div className="text-2xl font-bold text-amber-400 mt-1">
-                  {metrics.pendingAiApprovals}
-                </div>
-                <div className="text-xs text-slate-400 mt-1">
-                  Audit Trail Events: {metrics.totalAuditLogs}
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="p-5 rounded-xl bg-slate-900 border border-slate-800">
-                <h3 className="text-sm font-semibold mb-3">Agent Workload Distribution</h3>
-                <div className="space-y-3">
-                  {metrics.agentWorkloads.map((w) => (
-                    <div
-                      key={w.agentUsername}
-                      className="flex items-center justify-between p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs"
-                    >
-                      <div>
-                        <span className="font-medium text-slate-200">{w.agentUsername}</span>
-                        <span className="ml-2 text-slate-400">
-                          ({w.highOrCriticalTickets} High/Critical)
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300">
-                          {w.openTickets} Active
-                        </span>
-                        {w.escalatedTickets > 0 && (
-                          <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300">
-                            {w.escalatedTickets} Escalated
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="p-5 rounded-xl bg-slate-900 border border-slate-800">
-                <h3 className="text-sm font-semibold mb-3">Ticket Volume by Priority</h3>
-                <div className="grid grid-cols-2 gap-3 text-xs">
-                  {(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] as const).map((prio) => (
-                    <div
-                      key={prio}
-                      className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-between"
-                    >
-                      <span className="font-medium text-slate-300">{prio}</span>
-                      <span className="text-base font-bold text-indigo-400">
-                        {metrics.ticketsByPriority[prio] ?? 0}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
+          <AnalyticsOverviewPanel
+            metrics={metrics}
+            onCreateTicketClick={() => {
+              setActiveTab('tickets');
+              setShowNewTicketModal(true);
+            }}
+          />
         )}
 
         {activeTab === 'tickets' && (
@@ -683,14 +593,23 @@ export default function App() {
                       <div className="font-semibold text-indigo-300">
                         AI Triage Result (Confidence: {(latestTriage.confidence * 100).toFixed(0)}%)
                       </div>
-                      <p className="text-slate-300">{latestTriage.reasoning}</p>
+                      <p className="text-slate-300">{latestTriage.rationale || latestTriage.reasoning}</p>
                     </div>
                   )}
 
                   {latestRagSuggestion && latestRagSuggestion.ticketId === activeTicket.id && (
                     <div className="p-3.5 rounded-lg bg-emerald-950/30 border border-emerald-500/30 text-xs space-y-2">
-                      <div className="font-semibold text-emerald-300">
-                        Grounded Knowledge Base Citations ({latestRagSuggestion.citations.length})
+                      <div className="font-semibold text-emerald-300 flex items-center gap-1.5">
+                        {latestRagSuggestion.citations.length === 0 ? (
+                          <>
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                            <span className="text-amber-300">
+                              Insufficient KB Evidence — Citations Withheld (0 matches above threshold)
+                            </span>
+                          </>
+                        ) : (
+                          <span>Grounded Knowledge Base Citations ({latestRagSuggestion.citations.length})</span>
+                        )}
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                         {latestRagSuggestion.citations.map((c) => (
@@ -698,7 +617,7 @@ export default function App() {
                             <div className="font-mono text-emerald-400 font-semibold">
                               [{c.articleKey}] {c.title} (Score: {c.relevanceScore})
                             </div>
-                            <p className="text-slate-400 mt-1 line-clamp-2">{c.snippet}</p>
+                            <p className="text-slate-400 mt-1 line-clamp-2">{c.excerpt || c.snippet}</p>
                           </div>
                         ))}
                       </div>
@@ -770,80 +689,12 @@ export default function App() {
         )}
 
         {activeTab === 'approvals' && (
-          <div className="space-y-4">
-            <div>
-              <h2 className="text-lg font-semibold">Human-in-the-Loop AI Agent Tool Governance</h2>
-              <p className="text-xs text-slate-400">
-                Consequential AI tool invocations (SLA billing credits, Tier-3 engineering escalations, ticket closures) are held in PENDING status until approved by an authorized Agent or Admin.
-              </p>
-            </div>
-
-            <div className="space-y-3">
-              {approvalsQuery.data?.map((req) => (
-                <div
-                  key={req.id}
-                  className="p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4"
-                >
-                  <div className="space-y-1.5 text-xs">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-bold text-indigo-400">{req.ticketKey}</span>
-                      <span className="px-2 py-0.5 rounded bg-slate-800 font-mono text-slate-200">
-                        {req.toolName}
-                      </span>
-                      <span
-                        className={`px-2 py-0.5 rounded font-semibold ${
-                          req.status === 'PENDING'
-                            ? 'bg-amber-500/20 text-amber-300'
-                            : req.status === 'APPROVED'
-                            ? 'bg-emerald-500/20 text-emerald-300'
-                            : 'bg-rose-500/20 text-rose-300'
-                        }`}
-                      >
-                        {req.status}
-                      </span>
-                    </div>
-                    <div className="text-sm font-medium text-slate-100">{req.actionSummary}</div>
-                    <div className="text-slate-400">AI Reasoning: {req.aiReasoning}</div>
-                    <div className="font-mono text-[11px] text-slate-400">Payload: {req.parametersJson}</div>
-                    {req.executionResult && (
-                      <div className="text-emerald-300 font-medium mt-1">
-                        Execution Result: {req.executionResult}
-                      </div>
-                    )}
-                  </div>
-
-                  {req.status === 'PENDING' && (
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        onClick={() =>
-                          decideApprovalMutation.mutate({
-                            id: req.id,
-                            approved: true,
-                            decisionReason: 'Verified and approved via Agent Governance Console',
-                          })
-                        }
-                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-medium text-white cursor-pointer"
-                      >
-                        <CheckCircle2 className="w-4 h-4" /> Approve & Execute Tool
-                      </button>
-                      <button
-                        onClick={() =>
-                          decideApprovalMutation.mutate({
-                            id: req.id,
-                            approved: false,
-                            decisionReason: 'Rejected by human supervisor',
-                          })
-                        }
-                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-xs font-medium text-rose-300 cursor-pointer"
-                      >
-                        <XCircle className="w-4 h-4" /> Reject
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
+          <ApprovalsGovernancePanel
+            approvals={approvalsQuery.data || []}
+            onDecide={(id, approved, decisionReason) =>
+              decideApprovalMutation.mutate({ id, approved, decisionReason })
+            }
+          />
         )}
 
         {activeTab === 'knowledge' && (
@@ -874,7 +725,7 @@ export default function App() {
                           Similarity: {(res.relevanceScore * 100).toFixed(0)}%
                         </span>
                       </div>
-                      <p className="text-slate-300">{res.citationSnippet}</p>
+                      <p className="text-slate-300">{res.snippet || res.citationSnippet}</p>
                     </div>
                   ))}
                 </div>
@@ -926,69 +777,13 @@ export default function App() {
         )}
 
         {activeTab === 'directory' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
-              <h3 className="text-sm font-semibold">Organisations & SLA Policies</h3>
-              {orgsQuery.data?.map((o) => (
-                <div key={o.id} className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 text-xs flex justify-between">
-                  <div>
-                    <div className="font-semibold text-slate-100">{o.name}</div>
-                    <div className="text-slate-400">{o.domain}</div>
-                  </div>
-                  <div className="text-right">
-                    <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-semibold">
-                      {o.slaTier}
-                    </span>
-                    <div className="text-slate-400 mt-1">
-                      Response: {o.responseSlaMinutes}m · Resolution: {o.resolutionSlaHours}h
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
-              <h3 className="text-sm font-semibold">Customer Contacts</h3>
-              {customersQuery.data?.map((c) => (
-                <div key={c.id} className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 text-xs flex justify-between">
-                  <div>
-                    <div className="font-semibold text-slate-100">
-                      {c.fullName} {c.vip && <span className="text-amber-400 ml-1">★ VIP</span>}
-                    </div>
-                    <div className="text-slate-400">
-                      {c.jobTitle} · {c.organisationName}
-                    </div>
-                  </div>
-                  <div className="text-slate-400">{c.email}</div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <DirectoryPanel
+            organisations={orgsQuery.data || []}
+            customers={customersQuery.data || []}
+          />
         )}
 
-        {activeTab === 'audit' && (
-          <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
-            <h2 className="text-sm font-semibold">Immutable Security & AI Governance Audit Log</h2>
-            <div className="space-y-2">
-              {auditLogsQuery.data?.map((log) => (
-                <div
-                  key={log.id}
-                  className="p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs flex items-center justify-between"
-                >
-                  <div className="space-x-2">
-                    <span className="font-mono px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300">
-                      {log.eventType}
-                    </span>
-                    <span className="font-medium text-slate-200">{log.details}</span>
-                  </div>
-                  <div className="text-slate-400 font-mono text-[11px]">
-                    Actor: {log.actorUsername} · {new Date(log.createdAt).toLocaleTimeString()}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {activeTab === 'audit' && <AuditTrailPanel auditLogs={auditLogsQuery.data || []} />}
       </main>
     </div>
   );

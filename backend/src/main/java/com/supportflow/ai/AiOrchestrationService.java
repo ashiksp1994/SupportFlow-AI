@@ -1,35 +1,34 @@
 package com.supportflow.ai;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.supportflow.audit.AuditService;
 import com.supportflow.conversations.ConversationMessage;
 import com.supportflow.conversations.ConversationService;
+import com.supportflow.identity.security.AccessControlService;
 import com.supportflow.knowledge.KnowledgeService;
 import com.supportflow.tickets.Ticket;
 import com.supportflow.tickets.TicketService;
 
+/**
+ * SupportFlow AI — Grounded AI Orchestration Service.
+ * Provides:
+ *   1. Intelligent ticket classification, priority & sentiment triage with prompt-injection screening
+ *   2. Source-grounded RAG reply generation with chunk citations & explicit insufficient-evidence refusal
+ *   3. Multi-turn conversation summarisation
+ *   4. Controlled AI agent tool proposals with strict allowlist validation & human-in-the-loop approval execution
+ */
 @Service
 public class AiOrchestrationService {
 
@@ -40,26 +39,26 @@ public class AiOrchestrationService {
             String predictedPriority,
             String predictedSentiment,
             double confidence,
-            String reasoning,
-            String suggestedTool,
-            String providerUsed
+            String rationale,
+            String recommendedQueue,
+            boolean autoEscalationRecommended
     ) {}
 
-    public record RagCitation(
+    public record CitationItem(
             String articleKey,
             String title,
             String category,
             double relevanceScore,
-            String snippet
+            String excerpt
     ) {}
 
     public record RagReplySuggestion(
             Long ticketId,
             String ticketKey,
             String suggestedReply,
-            List<RagCitation> citations,
-            double groundedConfidence,
-            String providerUsed
+            double confidence,
+            List<CitationItem> citations,
+            boolean humanReviewRequired
     ) {}
 
     public record ConversationSummaryResult(
@@ -67,9 +66,9 @@ public class AiOrchestrationService {
             String ticketKey,
             String executiveSummary,
             List<String> keyPoints,
+            String customerSentiment,
             String recommendedNextStep,
-            int messageCount,
-            String providerUsed
+            int messageCount
     ) {}
 
     public record ProposeToolCallRequest(
@@ -88,7 +87,9 @@ public class AiOrchestrationService {
     private final KnowledgeService knowledgeService;
     private final AiApprovalRepository approvalRepository;
     private final AuditService auditService;
-    private final String configuredProvider;
+    private final AccessControlService accessControlService;
+    private final PromptInjectionGuard promptInjectionGuard;
+    private final LlmProviderClient llmProviderClient;
 
     public AiOrchestrationService(
             TicketService ticketService,
@@ -96,60 +97,81 @@ public class AiOrchestrationService {
             KnowledgeService knowledgeService,
             AiApprovalRepository approvalRepository,
             AuditService auditService,
-            @Value("${app.ai.provider:SPRING_AI_HYBRID}") String configuredProvider) {
+            AccessControlService accessControlService,
+            PromptInjectionGuard promptInjectionGuard,
+            LlmProviderClient llmProviderClient) {
         this.ticketService = ticketService;
         this.conversationService = conversationService;
         this.knowledgeService = knowledgeService;
         this.approvalRepository = approvalRepository;
         this.auditService = auditService;
-        this.configuredProvider = configuredProvider;
+        this.accessControlService = accessControlService;
+        this.promptInjectionGuard = promptInjectionGuard;
+        this.llmProviderClient = llmProviderClient;
     }
 
     @Transactional
     public AiTriageResult triageTicket(Long ticketId, String actor) {
         Ticket ticket = ticketService.findById(ticketId);
-        String text = (ticket.getSubject() + " " + ticket.getDescription()).toLowerCase(Locale.ROOT);
+        String rawText = ticket.getSubject() + " " + ticket.getDescription();
+        PromptInjectionGuard.PromptSafetyResult safety = promptInjectionGuard.inspect(rawText);
+        if (!safety.safe()) {
+            auditService.recordEvent(
+                    "AI_PROMPT_INJECTION_DETECTED",
+                    actor,
+                    "TICKET",
+                    ticket.getTicketKey(),
+                    "Detected prompt-injection pattern(s) during AI triage: " + String.join(", ", safety.matchedRules()));
+        }
+
+        String text = safety.sanitizedText().toLowerCase(Locale.ROOT);
 
         String category = "GENERAL";
-        if (containsAny(text, "saml", "sso", "mfa", "oauth", "certificate", "security", "auth", "permission", "401", "403")) {
+        if (containsAny(text, "sso", "saml", "oidc", "login", "mfa", "password", "auth", "token", "certificate", "401", "permission")) {
             category = "SECURITY";
-        } else if (containsAny(text, "invoice", "billing", "refund", "charge", "subscription", "credit", "payment")) {
+        } else if (containsAny(text, "invoice", "billing", "refund", "charge", "subscription", "credit", "payment", "stripe")) {
             category = "BILLING";
-        } else if (containsAny(text, "webhook", "api", "sdk", "integration", "429", "rate limit", "payload")) {
-            category = "INTEGRATION";
-        } else if (containsAny(text, "outage", "crash", "latency", "timeout", "500", "database", "pgvector", "bug", "error")) {
-            category = "TECHNICAL_ISSUE";
-        } else if (containsAny(text, "feature", "request", "roadmap", "enhancement")) {
-            category = "FEATURE_REQUEST";
+        } else if (containsAny(text, "api", "webhook", "429", "500", "timeout", "sdk", "endpoint", "latency", "outage", "database")) {
+            category = "TECHNICAL_API";
+        } else if (containsAny(text, "sla", "contract", "enterprise", "onboarding", "organisation")) {
+            category = "ENTERPRISE_OPS";
         }
 
         String priority = "MEDIUM";
-        if (containsAny(text, "production", "outage", "down", "critical", "all users", "breach", "p1", "urgent")) {
+        boolean recommendEscalation = false;
+        if (containsAny(text, "outage", "production down", "all users", "critical", "breach", "blocked", "p1", "urgent", "security")) {
             priority = "CRITICAL";
-        } else if (containsAny(text, "error", "failed", "failure", "blocked", "enterprise", "high", "sla")) {
+            recommendEscalation = true;
+        } else if (containsAny(text, "error", "failing", "500", "401", "429", "vip", "high", "unable")) {
             priority = "HIGH";
-        } else if (containsAny(text, "question", "how to", "minor", "feature")) {
+        } else if (containsAny(text, "question", "how to", "documentation", "feature request")) {
             priority = "LOW";
         }
 
         String sentiment = "NEUTRAL";
-        if (containsAny(text, "unacceptable", "frustrated", "immediately", "outage", "broken", "escalate")) {
-            sentiment = "URGENT";
-        } else if (containsAny(text, "failed", "error", "issue", "unable", "wrong")) {
-            sentiment = "CONCERNED";
+        if (containsAny(text, "urgent", "unacceptable", "blocked", "outage", "frustrated", "immediately", "broken", "breach")) {
+            sentiment = "FRUSTRATED_URGENT";
+        } else if (containsAny(text, "thanks", "appreciate", "great", "helpful")) {
+            sentiment = "POSITIVE";
         }
 
-        double confidence = 0.92;
-        String suggestedTool = switch (category) {
-            case "BILLING" -> "ISSUE_SLA_CREDIT_REFUND";
-            case "SECURITY" -> "ESCALATE_TO_TIER3_ENGINEERING";
-            default -> "CRITICAL".equals(priority) ? "ESCALATE_TO_TIER3_ENGINEERING" : "NONE";
+        String queue = switch (category) {
+            case "SECURITY" -> "Identity & Security Engineering";
+            case "BILLING" -> "Revenue & Billing Operations";
+            case "TECHNICAL_API" -> "Platform SRE & API Tier-2";
+            case "ENTERPRISE_OPS" -> "Enterprise Customer Success";
+            default -> "General Support Tier-1";
         };
 
-        String reasoning = String.format(
-                "Classified as %s (%s priority, %s sentiment) based on semantic signals in subject/description and organisation SLA context (%s).",
-                category, priority, sentiment,
-                ticket.getOrganisationName() != null ? ticket.getOrganisationName() : "Standard Tier");
+        double confidence = safety.safe() ? (recommendEscalation ? 0.94 : 0.89) : 0.65;
+        String rationale = String.format(
+                Locale.ROOT,
+                "Classified as %s (%s priority, sentiment=%s) routed to %s.%s",
+                category,
+                priority,
+                sentiment,
+                queue,
+                safety.safe() ? "" : " [WARN: Sanitized untrusted prompt-injection sequence]");
 
         ticket.setCategory(category);
         ticket.setPriority(priority);
@@ -159,7 +181,7 @@ public class AiOrchestrationService {
         ticketService.saveTicket(ticket);
 
         auditService.recordEvent("AI_TICKET_TRIAGED", actor, "TICKET", ticket.getTicketKey(),
-                "AI classified ticket: category=" + category + ", priority=" + priority + " (confidence=" + confidence + ")");
+                "AI classified ticket: category=" + category + ", priority=" + priority + ", confidence=" + confidence);
 
         return new AiTriageResult(
                 ticket.getId(),
@@ -168,53 +190,93 @@ public class AiOrchestrationService {
                 priority,
                 sentiment,
                 confidence,
-                reasoning,
-                suggestedTool,
-                configuredProvider
+                rationale,
+                queue,
+                recommendEscalation
         );
     }
 
     @Transactional
     public RagReplySuggestion suggestReplyWithCitations(Long ticketId, String actor) {
         Ticket ticket = ticketService.findById(ticketId);
-        String searchQuery = ticket.getSubject() + " " + ticket.getCategory() + " " + ticket.getDescription();
-        List<KnowledgeService.KnowledgeSearchResult> matches = knowledgeService.search(searchQuery, 3);
+        List<ConversationMessage> messages = conversationService.getMessagesForTicket(ticketId);
 
-        List<RagCitation> citations = matches.stream()
-                .map(m -> new RagCitation(m.articleKey(), m.title(), m.category(), m.relevanceScore(), m.citationSnippet()))
+        StringBuilder queryBuilder = new StringBuilder(ticket.getSubject())
+                .append(" ")
+                .append(ticket.getDescription());
+        if (!messages.isEmpty()) {
+            queryBuilder.append(" ").append(messages.getLast().getContent());
+        }
+
+        PromptInjectionGuard.PromptSafetyResult safety = promptInjectionGuard.inspect(queryBuilder.toString());
+        if (!safety.safe()) {
+            auditService.recordEvent(
+                    "AI_PROMPT_INJECTION_DETECTED",
+                    actor,
+                    "TICKET",
+                    ticket.getTicketKey(),
+                    "Sanitized prompt-injection pattern(s) before RAG retrieval: " + String.join(", ", safety.matchedRules()));
+        }
+
+        List<KnowledgeService.KnowledgeSearchResult> retrieved = knowledgeService.search(safety.sanitizedText(), 3);
+        List<CitationItem> citations = retrieved.stream()
+                .map(r -> new CitationItem(r.articleKey(), r.title(), r.category(), r.relevanceScore(), r.snippet()))
                 .toList();
 
-        StringBuilder reply = new StringBuilder();
-        String customerGreeting = ticket.getCustomerName() != null ? ticket.getCustomerName() : "there";
-        reply.append("Hi ").append(customerGreeting).append(",\n\n");
-        reply.append("Thank you for reaching out to SupportFlow AI regarding **").append(ticket.getSubject()).append("**.\n\n");
+        String customerDisplay = ticket.getCustomerName() != null ? ticket.getCustomerName() : "there";
 
-        if (!citations.isEmpty()) {
-            RagCitation primary = citations.getFirst();
-            reply.append("Based on our verified knowledge base documentation [").append(primary.articleKey()).append("], ");
-            reply.append("here are the recommended resolution steps:\n\n");
-            for (int i = 0; i < citations.size(); i++) {
-                RagCitation c = citations.get(i);
-                reply.append(i + 1).append(". **").append(c.title()).append("** ([").append(c.articleKey()).append("]): ")
-                        .append(c.snippet()).append("\n");
-            }
-            reply.append("\nPlease let us know once you have verified these steps or if you would like us to join a live troubleshooting session.\n\n");
-        } else {
-            reply.append("Our engineering support team has reviewed your report and is actively investigating the issue for your environment.\n\n");
+        // Strict Grounded RAG Guardrail: NEVER fabricate citations or invent facts when KB evidence is insufficient.
+        if (citations.isEmpty()) {
+            String insufficientEvidenceReply = "Insufficient Knowledge Base Evidence: No verified knowledge base articles met the minimum relevance threshold for ticket "
+                    + ticket.getTicketKey() + " (\"" + ticket.getSubject() + "\").\n\n"
+                    + "Recommended Action:\n"
+                    + "1. Do not send an unverified AI reply to " + customerDisplay + ".\n"
+                    + "2. Escalate to the appropriate specialist queue or publish a verified KB runbook before responding.";
+
+            auditService.recordEvent("AI_RAG_INSUFFICIENT_EVIDENCE", actor, "TICKET", ticket.getTicketKey(),
+                    "RAG retrieval returned 0 articles above relevance threshold; refused to fabricate citations.");
+
+            return new RagReplySuggestion(
+                    ticket.getId(),
+                    ticket.getTicketKey(),
+                    insufficientEvidenceReply,
+                    0.20,
+                    List.of(),
+                    true
+            );
         }
-        reply.append("Best regards,\nSupportFlow Technical Support");
 
-        double groundedConfidence = citations.isEmpty() ? 0.70 : citations.getFirst().relevanceScore();
+        StringBuilder deterministicReply = new StringBuilder();
+        deterministicReply.append("Hi ").append(customerDisplay).append(",\n\n");
+        deterministicReply.append("Thank you for contacting SupportFlow Enterprise Support regarding **")
+                .append(ticket.getSubject()).append("** (Ref: `").append(ticket.getTicketKey()).append("`).\n\n");
+        deterministicReply.append("Based on our verified engineering knowledge base:\n");
+        for (CitationItem c : citations) {
+            deterministicReply.append("- **[").append(c.articleKey()).append("] ").append(c.title()).append("**: ")
+                    .append(c.excerpt()).append("\n");
+        }
+        deterministicReply.append("\nPlease let us know once you have applied the steps in `[")
+                .append(citations.getFirst().articleKey())
+                .append("]` or if you would like us to join a live troubleshooting session.\n\n")
+                .append("Best regards,\nSupportFlow Technical Support");
+
+        LlmProviderClient.LlmCompletionResult llmResult = llmProviderClient.completeWithFallback(
+                "You are a grounded enterprise support copilot. Answer ONLY using the provided KB citations and cite article keys in brackets like [KB-101]. Never invent facts.",
+                "Ticket: " + safety.sanitizedText() + "\nCitations: " + citations,
+                deterministicReply.toString()
+        );
+
+        double confidence = citations.getFirst().relevanceScore();
         auditService.recordEvent("AI_RAG_REPLY_GENERATED", actor, "TICKET", ticket.getTicketKey(),
-                "Generated RAG response suggestion grounded in " + citations.size() + " knowledge base citations");
+                "Generated RAG reply with " + citations.size() + " citation(s) via " + llmResult.provider());
 
         return new RagReplySuggestion(
                 ticket.getId(),
                 ticket.getTicketKey(),
-                reply.toString(),
+                llmResult.content(),
+                confidence,
                 citations,
-                groundedConfidence,
-                configuredProvider
+                true
         );
     }
 
@@ -223,81 +285,111 @@ public class AiOrchestrationService {
         Ticket ticket = ticketService.findById(ticketId);
         List<ConversationMessage> messages = conversationService.getMessagesForTicket(ticketId);
 
-        String execSummary = String.format(
-                "Ticket %s ('%s') from %s is currently %s (%s priority). %d conversation messages exchanged.",
-                ticket.getTicketKey(),
-                ticket.getSubject(),
-                ticket.getOrganisationName() != null ? ticket.getOrganisationName() : "Customer",
-                ticket.getStatus(),
-                ticket.getPriority(),
-                messages.size());
+        List<String> keyPoints = new ArrayList<>();
+        keyPoints.add("Incident reported on ticket " + ticket.getTicketKey() + ": " + ticket.getSubject());
+        keyPoints.add("Current lifecycle state: status=" + ticket.getStatus() + ", priority=" + ticket.getPriority() + ", category=" + ticket.getCategory());
+        for (ConversationMessage m : messages) {
+            String snippet = m.getContent().length() > 120 ? m.getContent().substring(0, 117) + "..." : m.getContent();
+            keyPoints.add(m.getSenderType() + " (" + m.getSenderName() + "): " + snippet);
+        }
 
-        List<String> keyPoints = List.of(
-                "Reported Issue: " + ticket.getDescription(),
-                "Classification & Sentiment: " + ticket.getCategory() + " / " + ticket.getSentiment(),
-                messages.isEmpty()
-                        ? "Latest Activity: Awaiting initial agent response."
-                        : "Latest Message (" + messages.getLast().getSenderName() + "): " + messages.getLast().getContent()
+        String nextStep = "HIGH".equals(ticket.getPriority()) || "CRITICAL".equals(ticket.getPriority())
+                ? "Verify customer remediation using RAG-cited runbook or approve Tier-3 engineering escalation."
+                : "Send grounded response suggestion and monitor customer confirmation within SLA window.";
+
+        String execSummary = String.format(
+                Locale.ROOT,
+                "%s (%s) reported '%s' [%s/%s]. %d conversation message(s) exchanged. Assigned agent: %s.",
+                ticket.getCustomerName() != null ? ticket.getCustomerName() : "Customer",
+                ticket.getOrganisationName() != null ? ticket.getOrganisationName() : "Standard Tenant",
+                ticket.getSubject(),
+                ticket.getCategory(),
+                ticket.getPriority(),
+                messages.size(),
+                ticket.getAssignedAgentUsername() != null ? ticket.getAssignedAgentUsername() : "Unassigned"
         );
 
-        String nextStep = "ESCALATED".equals(ticket.getStatus())
-                ? "Coordinate with Tier-3 Engineering on root-cause remediation and update customer within SLA window."
-                : "Send grounded RAG resolution steps to customer and verify fix.";
-
-        ticket.setAiSummary(execSummary + " Next step: " + nextStep);
+        ticket.setAiSummary(execSummary);
         ticketService.saveTicket(ticket);
 
         auditService.recordEvent("AI_CONVERSATION_SUMMARIZED", actor, "TICKET", ticket.getTicketKey(),
-                "Summarized ticket thread (" + messages.size() + " messages)");
+                "Generated executive conversation summary (" + messages.size() + " messages)");
 
         return new ConversationSummaryResult(
                 ticket.getId(),
                 ticket.getTicketKey(),
                 execSummary,
                 keyPoints,
+                ticket.getSentiment(),
                 nextStep,
-                messages.size(),
-                configuredProvider
+                messages.size()
         );
     }
 
     @Transactional
     public AiApprovalRequest proposeToolAction(Long ticketId, ProposeToolCallRequest request, String actor) {
+        accessControlService.requireStaff();
         Ticket ticket = ticketService.findById(ticketId);
-        String tool = request.toolName().trim().toUpperCase(Locale.ROOT);
 
-        String actionSummary = switch (tool) {
-            case "ISSUE_SLA_CREDIT_REFUND" -> "Issue 15% monthly SLA service credit to " +
-                    (ticket.getOrganisationName() != null ? ticket.getOrganisationName() : "customer account");
-            case "ESCALATE_TO_TIER3_ENGINEERING" -> "Escalate ticket " + ticket.getTicketKey() +
-                    " to Tier-3 Principal Engineering on-call queue";
-            case "RESOLVE_AND_CLOSE_TICKET" -> "Mark ticket " + ticket.getTicketKey() + " as RESOLVED and notify customer";
-            default -> "Execute controlled support tool " + tool + " on ticket " + ticket.getTicketKey();
+        PromptInjectionGuard.PromptSafetyResult ticketSafety =
+                promptInjectionGuard.inspect(ticket.getSubject() + " " + ticket.getDescription() + " " + request.customReason());
+        if (!ticketSafety.safe()) {
+            auditService.recordEvent(
+                    "AI_TOOL_PROPOSAL_BLOCKED_INJECTION",
+                    actor,
+                    "TICKET",
+                    ticket.getTicketKey(),
+                    "Blocked AI tool proposal due to prompt-injection signature: " + String.join(", ", ticketSafety.matchedRules()));
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "AI tool proposal blocked by PromptInjectionGuard: untrusted instruction override detected.");
+        }
+
+        AllowedAiTool allowedTool = AllowedAiTool.fromNameOrThrow(request.toolName());
+        String normalizedParams = AllowedAiTool.validateAndNormalizeParametersJson(request.parametersJson(), allowedTool);
+
+        String summary = switch (allowedTool) {
+            case ISSUE_SLA_SERVICE_CREDIT ->
+                    "Issue 10% SLA service credit to organisation " + (ticket.getOrganisationName() != null ? ticket.getOrganisationName() : "Customer");
+            case ESCALATE_TO_TIER3_ENGINEERING ->
+                    "Escalate ticket " + ticket.getTicketKey() + " to Tier-3 Principal Engineering & shorten SLA to 2h";
+            case UPDATE_SLA_TIER ->
+                    "Override ticket " + ticket.getTicketKey() + " priority to CRITICAL with 2-hour SLA target";
+            case CLOSE_DUPLICATE ->
+                    "Close ticket " + ticket.getTicketKey() + " as verified duplicate incident";
         };
 
         AiApprovalRequest approval = new AiApprovalRequest();
         approval.setTicketId(ticket.getId());
         approval.setTicketKey(ticket.getTicketKey());
-        approval.setToolName(tool);
-        approval.setActionSummary(actionSummary);
-        approval.setParametersJson(request.parametersJson() != null && !request.parametersJson().isBlank()
-                ? request.parametersJson()
-                : "{\"ticketKey\":\"" + ticket.getTicketKey() + "\",\"tool\":\"" + tool + "\"}");
+        approval.setToolName(allowedTool.name());
+        approval.setActionSummary(summary);
+        approval.setParametersJson(normalizedParams);
         approval.setAiReasoning(request.customReason() != null && !request.customReason().isBlank()
-                ? request.customReason()
-                : "AI agent determined consequential action '" + tool + "' requires human supervisor approval under governance policy.");
+                ? request.customReason().trim()
+                : "AI Agent evaluated ticket priority (" + ticket.getPriority() + ") and SLA risk [Risk=" + allowedTool.getRiskLevel() + "]; human approval required before consequential state change.");
         approval.setConfidence(0.91);
         approval.setStatus("PENDING");
-        approval.setRequestedBy(actor != null ? actor : "AI_COPILOT");
+        approval.setRequestedBy(actor);
 
         AiApprovalRequest saved = approvalRepository.save(approval);
         auditService.recordEvent("AI_TOOL_APPROVAL_REQUESTED", actor, "AI_APPROVAL", String.valueOf(saved.getId()),
-                "Proposed tool " + tool + " for ticket " + ticket.getTicketKey() + " (awaiting human approval)");
+                "Proposed controlled tool '" + allowedTool.name() + "' on ticket " + ticket.getTicketKey());
         return saved;
     }
 
+    @Transactional(readOnly = true)
+    public List<AiApprovalRequest> listApprovals(String status) {
+        accessControlService.requireStaff();
+        if (status != null && !status.isBlank() && !"ALL".equalsIgnoreCase(status)) {
+            return approvalRepository.findByStatusOrderByCreatedAtDesc(status.trim().toUpperCase(Locale.ROOT));
+        }
+        return approvalRepository.findAllByOrderByCreatedAtDesc();
+    }
+
     @Transactional
-    public AiApprovalRequest decideApproval(Long approvalId, ApprovalDecisionRequest decision, String humanActor) {
+    public AiApprovalRequest decideApproval(Long approvalId, ApprovalDecisionRequest decision, String reviewer) {
+        accessControlService.requireStaff();
         AiApprovalRequest approval = approvalRepository.findById(approvalId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "AI approval request not found: " + approvalId));
 
@@ -305,61 +397,62 @@ public class AiOrchestrationService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Approval request has already been decided: " + approval.getStatus());
         }
 
-        approval.setDecidedBy(humanActor);
-        approval.setDecisionReason(decision.decisionReason() != null ? decision.decisionReason() : "");
+        Ticket ticket = ticketService.findById(approval.getTicketId());
+        approval.setDecidedBy(reviewer);
         approval.setDecidedAt(Instant.now());
+        approval.setDecisionReason(decision.decisionReason() != null && !decision.decisionReason().isBlank()
+                ? decision.decisionReason().trim()
+                : (decision.approved() ? "Approved by human supervisor" : "Rejected by human supervisor"));
 
-        if (decision.approved()) {
-            approval.setStatus("APPROVED");
-            String result = executeApprovedTool(approval, humanActor);
-            approval.setExecutionResult(result);
-            auditService.recordEvent("AI_TOOL_APPROVED_AND_EXECUTED", humanActor, "TICKET", approval.getTicketKey(),
-                    "Approved and executed tool " + approval.getToolName() + ": " + result);
-        } else {
+        if (!decision.approved()) {
             approval.setStatus("REJECTED");
-            approval.setExecutionResult("Action rejected by human reviewer (" + humanActor + "). Tool was not executed.");
-            auditService.recordEvent("AI_TOOL_REJECTED", humanActor, "TICKET", approval.getTicketKey(),
-                    "Rejected tool " + approval.getToolName() + ": " + approval.getDecisionReason());
+            approval.setExecutionResult("Action rejected by " + reviewer + ". No state mutation was executed.");
+            AiApprovalRequest saved = approvalRepository.save(approval);
+            auditService.recordEvent("AI_TOOL_APPROVAL_REJECTED", reviewer, "AI_APPROVAL", String.valueOf(saved.getId()),
+                    "Rejected tool '" + saved.getToolName() + "' on ticket " + saved.getTicketKey());
+            return saved;
         }
 
-        return approvalRepository.save(approval);
+        approval.setStatus("APPROVED");
+        AllowedAiTool tool = AllowedAiTool.fromNameOrThrow(approval.getToolName());
+        String resultMessage = executeApprovedTool(tool, ticket, reviewer);
+        approval.setExecutionResult(resultMessage);
+        AiApprovalRequest saved = approvalRepository.save(approval);
+
+        auditService.recordEvent("AI_TOOL_APPROVAL_EXECUTED", reviewer, "AI_APPROVAL", String.valueOf(saved.getId()),
+                "Approved and executed tool '" + saved.getToolName() + "' on ticket " + saved.getTicketKey() + ": " + resultMessage);
+        return saved;
     }
 
-    @Transactional(readOnly = true)
-    public List<AiApprovalRequest> listApprovals(String status) {
-        if (status != null && !status.isBlank() && !"ALL".equalsIgnoreCase(status)) {
-            return approvalRepository.findByStatusOrderByCreatedAtDesc(status.trim().toUpperCase(Locale.ROOT));
-        }
-        return approvalRepository.findAllByOrderByCreatedAtDesc();
-    }
-
-    private String executeApprovedTool(AiApprovalRequest approval, String humanActor) {
-        Long ticketId = approval.getTicketId();
-        return switch (approval.getToolName()) {
-            case "ESCALATE_TO_TIER3_ENGINEERING" -> {
-                ticketService.escalateTicket(ticketId, "Approved AI Tier-3 Engineering escalation (" + humanActor + ")", humanActor);
-                conversationService.addMessage(ticketId, new ConversationService.AddMessageRequest(
-                        "[AI Agent Tool Executed — Approved by " + humanActor + "] Ticket escalated to Tier-3 Engineering with full diagnostic context.",
-                        "AI_AGENT", "SupportFlow AI Agent", true, true, null), humanActor);
-                yield "Ticket escalated to Tier-3 Engineering and internal diagnostic note recorded.";
+    private String executeApprovedTool(AllowedAiTool tool, Ticket ticket, String reviewer) {
+        return switch (tool) {
+            case ESCALATE_TO_TIER3_ENGINEERING -> {
+                ticketService.escalateTicket(ticket.getId(), "AI-assisted Tier-3 escalation approved by " + reviewer, reviewer);
+                yield "Escalated ticket " + ticket.getTicketKey() + " to Tier-3 Principal Engineering and notified on-call channel.";
             }
-            case "ISSUE_SLA_CREDIT_REFUND" -> {
-                conversationService.addMessage(ticketId, new ConversationService.AddMessageRequest(
-                        "[AI Agent Tool Executed — Approved by " + humanActor + "] Applied 15% SLA credit adjustment to organisation billing ledger.",
-                        "AI_AGENT", "SupportFlow AI Agent", true, true, null), humanActor);
-                yield "Applied 15% SLA credit adjustment and logged internal billing confirmation.";
+            case ISSUE_SLA_SERVICE_CREDIT -> {
+                conversationService.addMessage(
+                        ticket.getId(),
+                        new ConversationService.AddMessageRequest(
+                                "[AI TOOL EXECUTED — APPROVED BY " + reviewer + "] Applied 10% SLA service credit to customer account ledger.",
+                                "SYSTEM",
+                                "SupportFlow AI Agent",
+                                true,
+                                true,
+                                null),
+                        reviewer);
+                yield "Issued 10% SLA service credit and recorded internal audit note on " + ticket.getTicketKey() + ".";
             }
-            case "RESOLVE_AND_CLOSE_TICKET" -> {
-                Ticket t = ticketService.findById(ticketId);
-                ticketService.updateStatusAndPriority(ticketId,
-                        new TicketService.UpdateTicketStatusRequest("RESOLVED", t.getPriority(), t.getCategory()), humanActor);
-                yield "Ticket status transitioned to RESOLVED.";
+            case UPDATE_SLA_TIER -> {
+                ticket.setPriority("CRITICAL");
+                ticket.setSlaDueAt(Instant.now().plus(2, ChronoUnit.HOURS));
+                ticketService.saveTicket(ticket);
+                yield "Updated ticket " + ticket.getTicketKey() + " priority to CRITICAL with 2-hour SLA deadline.";
             }
-            default -> {
-                conversationService.addMessage(ticketId, new ConversationService.AddMessageRequest(
-                        "[AI Agent Tool Executed — Approved by " + humanActor + "] Executed tool " + approval.getToolName(),
-                        "AI_AGENT", "SupportFlow AI Agent", true, true, null), humanActor);
-                yield "Executed controlled tool " + approval.getToolName() + ".";
+            case CLOSE_DUPLICATE -> {
+                ticket.setStatus("CLOSED");
+                ticketService.saveTicket(ticket);
+                yield "Closed ticket " + ticket.getTicketKey() + " as verified duplicate incident.";
             }
         };
     }
@@ -371,59 +464,5 @@ public class AiOrchestrationService {
             }
         }
         return false;
-    }
-
-    @RestController
-    @RequestMapping("/api/ai")
-    public static class AiController {
-
-        private final AiOrchestrationService aiService;
-
-        public AiController(AiOrchestrationService aiService) {
-            this.aiService = aiService;
-        }
-
-        @PostMapping("/tickets/{ticketId}/triage")
-        public AiTriageResult triageTicket(@PathVariable Long ticketId, Authentication auth) {
-            String actor = auth != null ? auth.getName() : "AI_COPILOT";
-            return aiService.triageTicket(ticketId, actor);
-        }
-
-        @PostMapping("/tickets/{ticketId}/suggest-reply")
-        public RagReplySuggestion suggestReply(@PathVariable Long ticketId, Authentication auth) {
-            String actor = auth != null ? auth.getName() : "AI_COPILOT";
-            return aiService.suggestReplyWithCitations(ticketId, actor);
-        }
-
-        @PostMapping("/tickets/{ticketId}/summarize")
-        public ConversationSummaryResult summarizeTicket(@PathVariable Long ticketId, Authentication auth) {
-            String actor = auth != null ? auth.getName() : "AI_COPILOT";
-            return aiService.summarizeConversation(ticketId, actor);
-        }
-
-        @PostMapping("/tickets/{ticketId}/propose-action")
-        @ResponseStatus(HttpStatus.CREATED)
-        public AiApprovalRequest proposeAction(
-                @PathVariable Long ticketId,
-                @Valid @RequestBody ProposeToolCallRequest request,
-                Authentication auth) {
-            String actor = auth != null ? auth.getName() : "AI_COPILOT";
-            return aiService.proposeToolAction(ticketId, request, actor);
-        }
-
-        @GetMapping("/approvals")
-        public List<AiApprovalRequest> listApprovals(@RequestParam(required = false) String status) {
-            return aiService.listApprovals(status);
-        }
-
-        @PostMapping("/approvals/{id}/decide")
-        @PreAuthorize("hasAnyRole('ADMIN', 'AGENT')")
-        public AiApprovalRequest decideApproval(
-                @PathVariable Long id,
-                @Valid @RequestBody ApprovalDecisionRequest request,
-                Authentication auth) {
-            String actor = auth != null ? auth.getName() : "SUPERVISOR";
-            return aiService.decideApproval(id, request, actor);
-        }
     }
 }

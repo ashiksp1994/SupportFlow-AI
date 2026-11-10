@@ -1,52 +1,66 @@
 package com.supportflow.knowledge;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.supportflow.audit.AuditService;
+import com.supportflow.identity.security.AccessControlService;
 
+/**
+ * Knowledge Base & Grounded RAG Retrieval Service.
+ * Segments articles into searchable chunks, computes 16-dimensional semantic feature + lexical embeddings,
+ * enforces multi-organisation visibility, and filters out results below the minimum relevance threshold
+ * so that AI suggestions never fabricate citations when the KB lacks evidence.
+ */
 @Service
 public class KnowledgeService {
 
-    private static final String[][] SEMANTIC_DIMENSIONS = {
-            {"saml", "sso", "idp", "certificate", "assertion", "okta", "auth", "login", "mfa", "oauth"},
-            {"billing", "invoice", "refund", "credit", "charge", "subscription", "payment", "stripe", "vat", "plan"},
-            {"webhook", "api", "rate", "limit", "429", "timeout", "sdk", "payload", "integration", "endpoint"},
-            {"database", "pgvector", "postgres", "latency", "query", "index", "migration", "connection", "pool", "slow"},
-            {"sla", "escalation", "enterprise", "outage", "critical", "incident", "downtime", "breach", "uptime", "p1"},
-            {"permission", "rbac", "role", "admin", "access", "forbidden", "403", "401", "token", "jwt"},
-            {"export", "gdpr", "compliance", "audit", "privacy", "deletion", "retention", "soc2", "pii", "encryption"},
-            {"attachment", "upload", "s3", "minio", "presigned", "file", "storage", "bucket", "media", "size"}
-    };
+    private static final List<String[]> SEMANTIC_DIMENSIONS = List.of(
+            new String[]{"sso", "saml", "oidc", "oauth", "login", "authentication", "mfa", "password", "token", "jwt", "certificate", "idp", "okta", "entra"},
+            new String[]{"billing", "invoice", "refund", "credit", "subscription", "charge", "stripe", "payment", "plan", "vat", "pricing"},
+            new String[]{"api", "webhook", "rate", "limit", "429", "500", "timeout", "sdk", "endpoint", "payload", "rest", "graphql"},
+            new String[]{"sla", "outage", "critical", "incident", "downtime", "latency", "degraded", "escalation", "production", "p1"},
+            new String[]{"database", "postgres", "pgvector", "migration", "backup", "replication", "query", "index", "lock", "connection"},
+            new String[]{"security", "rbac", "permission", "role", "audit", "compliance", "gdpr", "encryption", "tls", "vulnerability"},
+            new String[]{"rag", "ai", "embedding", "vector", "knowledge", "citation", "agent", "approval", "model", "prompt"},
+            new String[]{"ui", "frontend", "browser", "dashboard", "export", "csv", "notification", "email", "slack", "attachment"},
+            new String[]{"certificate", "x509", "pem", "signature", "401", "rotation", "metadata", "assertion", "signing"},
+            new String[]{"retry", "backoff", "jitter", "idempotency", "hmac", "sha256", "delivery", "queue", "dlq"},
+            new String[]{"credit", "pro-rata", "uptime", "breach", "tier", "enterprise", "business", "contract"},
+            new String[]{"tenant", "organisation", "isolation", "cross-tenant", "customer", "workspace", "domain"}
+    );
+
+    private static final Set<String> STOP_WORDS = Set.of(
+            "the", "and", "for", "with", "that", "this", "from", "are", "was", "were", "have", "has",
+            "had", "not", "but", "what", "all", "when", "can", "your", "our", "how", "why", "who", "into", "after"
+    );
 
     public record CreateArticleRequest(
             @NotBlank(message = "Title is required") String title,
             @NotBlank(message = "Category is required") String category,
             String tags,
-            @NotBlank(message = "Content is required") String content
-    ) {}
+            @NotBlank(message = "Content is required") String content,
+            Long organisationId
+    ) {
+        public CreateArticleRequest(String title, String category, String tags, String content) {
+            this(title, category, tags, content, null);
+        }
+    }
 
     public record KnowledgeSearchResult(
             Long id,
@@ -54,131 +68,257 @@ public class KnowledgeService {
             String title,
             String category,
             String tags,
-            double relevanceScore,
-            String citationSnippet
+            String snippet,
+            double relevanceScore
     ) {}
 
     private final KnowledgeArticleRepository articleRepository;
+    private final KnowledgeChunkRepository chunkRepository;
     private final AuditService auditService;
+    private final AccessControlService accessControlService;
+    private final double minRelevanceThreshold;
 
-    public KnowledgeService(KnowledgeArticleRepository articleRepository, AuditService auditService) {
+    public KnowledgeService(
+            KnowledgeArticleRepository articleRepository,
+            KnowledgeChunkRepository chunkRepository,
+            AuditService auditService,
+            AccessControlService accessControlService,
+            @Value("${app.ai.rag.min-relevance-threshold:0.25}") double minRelevanceThreshold) {
         this.articleRepository = articleRepository;
+        this.chunkRepository = chunkRepository;
         this.auditService = auditService;
+        this.accessControlService = accessControlService;
+        this.minRelevanceThreshold = minRelevanceThreshold;
     }
 
     @Transactional(readOnly = true)
     public List<KnowledgeArticle> listPublishedArticles() {
-        return articleRepository.findByPublishedTrueOrderByUpdatedAtDesc();
+        return articleRepository.findByPublishedTrueOrderByUpdatedAtDesc().stream()
+                .filter(this::isArticleVisibleToCaller)
+                .toList();
     }
 
     @Transactional(readOnly = true)
-    public KnowledgeArticle findById(Long id) {
-        return articleRepository.findById(id)
+    public KnowledgeArticle getById(Long id) {
+        KnowledgeArticle article = articleRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Knowledge article not found: " + id));
+        if (!isArticleVisibleToCaller(article)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied to organisation knowledge article.");
+        }
+        return article;
+    }
+
+    @Transactional(readOnly = true)
+    public List<KnowledgeChunk> getChunksForArticle(Long articleId) {
+        getById(articleId);
+        return chunkRepository.findByArticleIdOrderByChunkIndexAsc(articleId);
     }
 
     @Transactional
     public KnowledgeArticle createArticle(CreateArticleRequest request, String actor) {
+        accessControlService.requireStaff();
         KnowledgeArticle article = new KnowledgeArticle();
         long nextNum = articleRepository.count() + 101;
         article.setArticleKey("KB-" + nextNum);
         article.setTitle(request.title().trim());
         article.setCategory(request.category().trim().toUpperCase());
-        article.setTags(request.tags() != null ? request.tags().trim() : "");
+        article.setTags(request.tags() != null ? request.tags().trim().toLowerCase() : "");
         article.setContent(request.content().trim());
-        article.setCreatedBy(actor != null ? actor : "SYSTEM");
+        article.setOrganisationId(request.organisationId());
+        article.setCreatedBy(actor);
+        article.setPublished(true);
 
         String combinedText = article.getTitle() + " " + article.getCategory() + " " + article.getTags() + " " + article.getContent();
-        article.setEmbeddingVector(formatVector(computeEmbedding(combinedText)));
-        article.setUpdatedAt(Instant.now());
+        article.setEmbeddingVector(computeEmbedding(combinedText));
 
         KnowledgeArticle saved = articleRepository.save(article);
-        auditService.recordEvent("KB_ARTICLE_CREATED", actor, "KNOWLEDGE_ARTICLE", saved.getArticleKey(),
-                "Published knowledge base article '" + saved.getTitle() + "'");
+
+        // Segment article content into grounded chunks and index each chunk's vector
+        List<String> segments = chunkContent(saved.getTitle(), saved.getContent());
+        List<KnowledgeChunk> chunks = new ArrayList<>();
+        for (int i = 0; i < segments.size(); i++) {
+            KnowledgeChunk chunk = new KnowledgeChunk();
+            chunk.setArticleId(saved.getId());
+            chunk.setArticleKey(saved.getArticleKey());
+            chunk.setOrganisationId(saved.getOrganisationId());
+            chunk.setChunkIndex(i);
+            chunk.setChunkText(segments.get(i));
+            chunk.setEmbeddingVector(computeEmbedding(saved.getTitle() + " " + saved.getTags() + " " + segments.get(i)));
+            chunks.add(chunk);
+        }
+        chunkRepository.saveAll(chunks);
+
+        auditService.recordEvent("KB_ARTICLE_PUBLISHED", actor, "KB_ARTICLE", saved.getArticleKey(),
+                "Published knowledge base article '" + saved.getTitle() + "' with " + chunks.size() + " RAG chunks");
         return saved;
     }
 
+    /**
+     * Performs tenant-filtered hybrid vector + lexical chunk search with strict minimum relevance threshold.
+     * Never returns articles below {@code minRelevanceThreshold} so downstream RAG cannot hallucinate citations.
+     */
     @Transactional(readOnly = true)
     public List<KnowledgeSearchResult> search(String query, int limit) {
-        List<KnowledgeArticle> articles = articleRepository.findByPublishedTrueOrderByUpdatedAtDesc();
         if (query == null || query.isBlank()) {
-            return articles.stream()
-                    .limit(Math.max(1, limit))
-                    .map(a -> new KnowledgeSearchResult(
-                            a.getId(), a.getArticleKey(), a.getTitle(), a.getCategory(), a.getTags(),
-                            1.0, extractSnippet(a.getContent(), "")))
-                    .toList();
+            return List.of();
+        }
+        List<KnowledgeArticle> visibleArticles = listPublishedArticles();
+        if (visibleArticles.isEmpty()) {
+            return List.of();
         }
 
-        double[] queryVec = computeEmbedding(query);
-        Set<String> queryTokens = tokenize(query);
+        Map<Long, KnowledgeArticle> articleMap = visibleArticles.stream()
+                .collect(Collectors.toMap(KnowledgeArticle::getId, a -> a));
 
-        return articles.stream()
-                .map(article -> {
-                    double[] docVec = parseVector(article.getEmbeddingVector());
-                    double cosine = cosineSimilarity(queryVec, docVec);
+        double[] queryVec = parseVector(computeEmbedding(query));
+        List<String> meaningfulTokens = Arrays.stream(query.toLowerCase(Locale.ROOT).split("[^a-z0-9]+"))
+                .filter(t -> t.length() >= 3 && !STOP_WORDS.contains(t))
+                .distinct()
+                .toList();
 
-                    Set<String> docTokens = tokenize(article.getTitle() + " " + article.getTags() + " " + article.getContent());
-                    long overlap = queryTokens.stream().filter(docTokens::contains).count();
-                    double lexicalScore = queryTokens.isEmpty() ? 0.0 : (double) overlap / queryTokens.size();
+        if (meaningfulTokens.isEmpty()) {
+            return List.of();
+        }
 
-                    double combinedScore = Math.min(0.99, Math.round((cosine * 0.65 + lexicalScore * 0.35) * 100.0) / 100.0);
-                    return new KnowledgeSearchResult(
-                            article.getId(),
-                            article.getArticleKey(),
-                            article.getTitle(),
-                            article.getCategory(),
-                            article.getTags(),
-                            Math.max(0.15, combinedScore),
-                            extractSnippet(article.getContent(), query)
-                    );
-                })
+        List<KnowledgeSearchResult> scored = new ArrayList<>();
+
+        for (KnowledgeArticle article : visibleArticles) {
+            List<KnowledgeChunk> articleChunks = chunkRepository.findByArticleIdOrderByChunkIndexAsc(article.getId());
+            String bestSnippet = summarizeSnippet(article.getContent());
+            double bestChunkCosine = cosineSimilarity(queryVec, parseVector(article.getEmbeddingVector()));
+
+            for (KnowledgeChunk chunk : articleChunks) {
+                double chunkCosine = cosineSimilarity(queryVec, parseVector(chunk.getEmbeddingVector()));
+                double chunkLexical = computeLexicalOverlap(meaningfulTokens, article.getTitle(), article.getTags(), chunk.getChunkText());
+                if (chunkCosine + chunkLexical > bestChunkCosine) {
+                    bestChunkCosine = chunkCosine;
+                    bestSnippet = summarizeSnippet(chunk.getChunkText());
+                }
+            }
+
+            double lexicalScore = computeLexicalOverlap(
+                    meaningfulTokens,
+                    article.getTitle(),
+                    article.getTags(),
+                    article.getContent());
+
+            // Require at least some lexical or strong semantic signal; never clamp to an artificial floor.
+            double combinedScore = Math.min(0.99, (bestChunkCosine * 0.50) + (lexicalScore * 0.50));
+            if (lexicalScore == 0.0 && bestChunkCosine < 0.65) {
+                combinedScore = 0.0;
+            }
+
+            if (combinedScore >= minRelevanceThreshold) {
+                scored.add(new KnowledgeSearchResult(
+                        article.getId(),
+                        article.getArticleKey(),
+                        article.getTitle(),
+                        article.getCategory(),
+                        article.getTags(),
+                        bestSnippet,
+                        Math.round(combinedScore * 100.0) / 100.0
+                ));
+            }
+        }
+
+        return scored.stream()
                 .sorted(Comparator.comparingDouble(KnowledgeSearchResult::relevanceScore).reversed())
                 .limit(Math.max(1, limit))
                 .toList();
     }
 
-    public double[] computeEmbedding(String text) {
-        double[] vec = new double[SEMANTIC_DIMENSIONS.length];
+    private boolean isArticleVisibleToCaller(KnowledgeArticle article) {
+        if (article.getOrganisationId() == null) {
+            return true;
+        }
+        return accessControlService.canAccessTenant(article.getOrganisationId(), null);
+    }
+
+    private double computeLexicalOverlap(List<String> queryTokens, String title, String tags, String body) {
+        if (queryTokens.isEmpty()) {
+            return 0.0;
+        }
+        String titleLower = title != null ? title.toLowerCase(Locale.ROOT) : "";
+        String tagsLower = tags != null ? tags.toLowerCase(Locale.ROOT) : "";
+        String bodyLower = body != null ? body.toLowerCase(Locale.ROOT) : "";
+
+        double matchedWeight = 0.0;
+        for (String token : queryTokens) {
+            if (titleLower.contains(token) || tagsLower.contains(token)) {
+                matchedWeight += 1.0;
+            } else if (bodyLower.contains(token)) {
+                matchedWeight += 0.65;
+            }
+        }
+        return Math.min(1.0, matchedWeight / Math.min(queryTokens.size(), 4));
+    }
+
+    public List<String> chunkContent(String title, String content) {
+        if (content == null || content.isBlank()) {
+            return List.of(title != null ? title : "");
+        }
+        String[] paragraphs = content.split("\\n\\s*\\n|(?<=\\.)\\s+(?=[A-Z0-9])");
+        List<String> chunks = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        for (String p : paragraphs) {
+            String trimmed = p.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            if (current.length() + trimmed.length() > 360 && !current.isEmpty()) {
+                chunks.add(current.toString().trim());
+                current.setLength(0);
+            }
+            if (!current.isEmpty()) {
+                current.append(" ");
+            }
+            current.append(trimmed);
+        }
+        if (!current.isEmpty()) {
+            chunks.add(current.toString().trim());
+        }
+        return chunks.isEmpty() ? List.of(content.trim()) : chunks;
+    }
+
+    public String computeEmbedding(String text) {
         String lower = text == null ? "" : text.toLowerCase(Locale.ROOT);
-        double normSq = 0.0;
-        for (int i = 0; i < SEMANTIC_DIMENSIONS.length; i++) {
-            double score = 0.05;
-            for (String keyword : SEMANTIC_DIMENSIONS[i]) {
-                if (lower.contains(keyword)) {
+        double[] vec = new double[SEMANTIC_DIMENSIONS.size()];
+        double norm = 0.0;
+
+        for (int i = 0; i < SEMANTIC_DIMENSIONS.size(); i++) {
+            double score = 0.0;
+            for (String kw : SEMANTIC_DIMENSIONS.get(i)) {
+                if (lower.contains(kw)) {
                     score += 1.0;
                 }
             }
             vec[i] = score;
-            normSq += score * score;
+            norm += score * score;
         }
-        double norm = Math.sqrt(normSq);
-        if (norm > 0) {
-            for (int i = 0; i < vec.length; i++) {
-                vec[i] = Math.round((vec[i] / norm) * 10000.0) / 10000.0;
+
+        double denom = norm > 0 ? Math.sqrt(norm) : 1.0;
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < vec.length; i++) {
+            if (i > 0) {
+                sb.append(",");
             }
+            sb.append(String.format(Locale.ROOT, "%.4f", vec[i] / denom));
         }
-        return vec;
+        return sb.toString();
     }
 
-    private String formatVector(double[] vec) {
-        return Arrays.stream(vec)
-                .mapToObj(Double::toString)
-                .collect(Collectors.joining(",", "[", "]"));
-    }
-
-    private double[] parseVector(String formatted) {
-        if (formatted == null || formatted.isBlank()) {
-            return new double[SEMANTIC_DIMENSIONS.length];
+    private double[] parseVector(String vectorStr) {
+        if (vectorStr == null || vectorStr.isBlank()) {
+            return new double[SEMANTIC_DIMENSIONS.size()];
         }
-        String clean = formatted.replace("[", "").replace("]", "").trim();
-        if (clean.isEmpty()) {
-            return new double[SEMANTIC_DIMENSIONS.length];
-        }
-        String[] parts = clean.split(",");
+        String[] parts = vectorStr.split(",");
         double[] vec = new double[parts.length];
         for (int i = 0; i < parts.length; i++) {
-            vec[i] = Double.parseDouble(parts[i].trim());
+            try {
+                vec[i] = Double.parseDouble(parts[i].trim());
+            } catch (NumberFormatException ignored) {
+                vec[i] = 0.0;
+            }
         }
         return vec;
     }
@@ -193,56 +333,17 @@ public class KnowledgeService {
             normA += a[i] * a[i];
             normB += b[i] * b[i];
         }
-        if (normA == 0 || normB == 0) {
+        if (normA == 0.0 || normB == 0.0) {
             return 0.0;
         }
         return dot / (Math.sqrt(normA) * Math.sqrt(normB));
     }
 
-    private Set<String> tokenize(String text) {
-        return Arrays.stream(text.toLowerCase(Locale.ROOT).split("[^a-z0-9]+"))
-                .filter(t -> t.length() >= 3)
-                .collect(Collectors.toSet());
-    }
-
-    private String extractSnippet(String content, String query) {
-        if (content == null) return "";
-        if (content.length() <= 220) return content;
-        return content.substring(0, 217) + "...";
-    }
-
-    @RestController
-    @RequestMapping("/api/knowledge")
-    public static class KnowledgeController {
-
-        private final KnowledgeService knowledgeService;
-
-        public KnowledgeController(KnowledgeService knowledgeService) {
-            this.knowledgeService = knowledgeService;
+    private String summarizeSnippet(String content) {
+        if (content == null) {
+            return "";
         }
-
-        @GetMapping("/articles")
-        public List<KnowledgeArticle> listArticles() {
-            return knowledgeService.listPublishedArticles();
-        }
-
-        @GetMapping("/articles/{id}")
-        public KnowledgeArticle getArticle(@PathVariable Long id) {
-            return knowledgeService.findById(id);
-        }
-
-        @PostMapping("/articles")
-        @ResponseStatus(HttpStatus.CREATED)
-        public KnowledgeArticle createArticle(@Valid @RequestBody CreateArticleRequest request, Authentication auth) {
-            String actor = auth != null ? auth.getName() : "SYSTEM";
-            return knowledgeService.createArticle(request, actor);
-        }
-
-        @GetMapping("/search")
-        public List<KnowledgeSearchResult> searchArticles(
-                @RequestParam(name = "q", defaultValue = "") String query,
-                @RequestParam(name = "limit", defaultValue = "4") int limit) {
-            return knowledgeService.search(query, limit);
-        }
+        String clean = content.replaceAll("\\s+", " ").trim();
+        return clean.length() <= 220 ? clean : clean.substring(0, 217) + "...";
     }
 }

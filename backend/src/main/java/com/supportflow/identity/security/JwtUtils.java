@@ -1,37 +1,63 @@
 package com.supportflow.identity.security;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Date;
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.function.Function;
 
 import javax.crypto.SecretKey;
-
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.security.core.GrantedAuthority;
-import org.springframework.security.core.userdetails.UserDetails;
-import org.springframework.stereotype.Component;
 
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.stereotype.Service;
 
-@Component
+@Service
 public class JwtUtils {
 
-    @Value("${jwt.secret}")
-    private String secret;
+    private static final String DEV_FALLBACK_SECRET =
+            "U3VwcG9ydEZsb3dBSURldk9ubHlGYWxsYmFja1NlY3JldEtleUZvckxvY2FsVGVzdGluZzIwMjY=";
+    public static final String ISSUER = "supportflow-ai";
 
-    @Value("${jwt.expirationMs}")
-    private long expirationMs;
+    private final SecretKey signingKey;
+    private final long accessTokenExpirationMs;
 
-    private SecretKey getSigningKey() {
-        byte[] keyBytes = Decoders.BASE64.decode(secret);
-        return Keys.hmacShaKeyFor(keyBytes);
+    public JwtUtils(
+            @Value("${jwt.secret}") String secret,
+            @Value("${jwt.access-token-expiration-ms:900000}") long accessTokenExpirationMs,
+            Environment environment) {
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException("JWT_SECRET environment variable must be configured and non-empty.");
+        }
+        boolean isProdProfile = environment != null
+                && Arrays.asList(environment.getActiveProfiles()).contains("prod");
+        if (isProdProfile && DEV_FALLBACK_SECRET.equals(secret.trim())) {
+            throw new IllegalStateException(
+                    "SECURITY ERROR: Production profile cannot start with the default development JWT_SECRET fallback.");
+        }
+        byte[] keyBytes;
+        try {
+            keyBytes = Decoders.BASE64.decode(secret.trim());
+        } catch (IllegalArgumentException ex) {
+            keyBytes = secret.trim().getBytes(StandardCharsets.UTF_8);
+        }
+        if (keyBytes.length < 32) {
+            throw new IllegalStateException("JWT_SECRET must be at least 256 bits (32 bytes).");
+        }
+        this.signingKey = Keys.hmacShaKeyFor(keyBytes);
+        this.accessTokenExpirationMs = accessTokenExpirationMs;
     }
 
-    public long getExpirationMs() {
-        return expirationMs;
+    public long getAccessTokenExpirationMs() {
+        return accessTokenExpirationMs;
     }
 
     public String extractUsername(String token) {
@@ -49,31 +75,44 @@ public class JwtUtils {
 
     private Claims extractAllClaims(String token) {
         return Jwts.parser()
-                .verifyWith(getSigningKey())
+                .verifyWith(signingKey)
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();
     }
 
-    private Boolean isTokenExpired(String token) {
+    private boolean isTokenExpired(String token) {
         return extractExpiration(token).before(new Date());
     }
 
     public String generateToken(UserDetails userDetails) {
-        List<String> roles = userDetails.getAuthorities() != null
-                ? userDetails.getAuthorities().stream().map(GrantedAuthority::getAuthority).toList()
-                : List.of();
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("roles", userDetails.getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority)
+                .toList());
+        return createToken(claims, userDetails.getUsername());
+    }
+
+    private String createToken(Map<String, Object> claims, String subject) {
+        long now = System.currentTimeMillis();
         return Jwts.builder()
-                .subject(userDetails.getUsername())
-                .claim("roles", roles)
-                .issuedAt(new Date())
-                .expiration(new Date(System.currentTimeMillis() + expirationMs))
-                .signWith(getSigningKey())
+                .claims(claims)
+                .issuer(ISSUER)
+                .subject(subject)
+                .issuedAt(new Date(now))
+                .expiration(new Date(now + accessTokenExpirationMs))
+                .signWith(signingKey)
                 .compact();
     }
 
-    public Boolean validateToken(String token, UserDetails userDetails) {
-        final String username = extractUsername(token);
-        return (username.equals(userDetails.getUsername()) && !isTokenExpired(token));
+    public boolean validateToken(String token, UserDetails userDetails) {
+        final Claims claims = extractAllClaims(token);
+        final String username = claims.getSubject();
+        final String issuer = claims.getIssuer();
+        boolean issuerValid = (issuer == null || ISSUER.equals(issuer));
+        return username != null
+                && username.equals(userDetails.getUsername())
+                && issuerValid
+                && !claims.getExpiration().before(new Date());
     }
 }

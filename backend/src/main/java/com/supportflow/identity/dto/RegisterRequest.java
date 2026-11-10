@@ -20,5 +20,17 @@ public record RegisterRequest(
 
         String phone,
         String dateOfBirth,
-        String gender
-) {}
+        String gender,
+        Long organisationId
+) {
+    public RegisterRequest(
+            String username,
+            String password,
+            String fullName,
+            String email,
+            String phone,
+            String dateOfBirth,
+            String gender) {
+        this(username, password, fullName, email, phone, dateOfBirth, gender, null);
+    }
+}

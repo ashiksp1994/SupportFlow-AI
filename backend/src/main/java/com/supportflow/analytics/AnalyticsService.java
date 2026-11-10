@@ -8,9 +8,6 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
 
 import com.supportflow.ai.AiApprovalRepository;
 import com.supportflow.ai.AiOrchestrationService;
@@ -21,6 +18,7 @@ import com.supportflow.customers.CustomerRepository;
 import com.supportflow.customers.CustomerService;
 import com.supportflow.identity.model.UserModel;
 import com.supportflow.identity.repository.UserRepository;
+import com.supportflow.identity.security.AccessControlService;
 import com.supportflow.identity.service.UserService;
 import com.supportflow.knowledge.KnowledgeArticleRepository;
 import com.supportflow.knowledge.KnowledgeService;
@@ -59,6 +57,7 @@ public class AnalyticsService {
     private final OrganisationRepository organisationRepository;
     private final CustomerRepository customerRepository;
     private final AuditService auditService;
+    private final AccessControlService accessControlService;
 
     public AnalyticsService(
             TicketRepository ticketRepository,
@@ -67,7 +66,8 @@ public class AnalyticsService {
             KnowledgeArticleRepository knowledgeRepository,
             OrganisationRepository organisationRepository,
             CustomerRepository customerRepository,
-            AuditService auditService) {
+            AuditService auditService,
+            AccessControlService accessControlService) {
         this.ticketRepository = ticketRepository;
         this.ticketService = ticketService;
         this.approvalRepository = approvalRepository;
@@ -75,26 +75,29 @@ public class AnalyticsService {
         this.organisationRepository = organisationRepository;
         this.customerRepository = customerRepository;
         this.auditService = auditService;
+        this.accessControlService = accessControlService;
     }
 
     @Transactional(readOnly = true)
     public DashboardAnalytics getDashboardAnalytics() {
-        long total = ticketRepository.count();
-        long open = ticketRepository.countByStatus("OPEN");
-        long inProgress = ticketRepository.countByStatus("IN_PROGRESS");
-        long escalated = ticketRepository.countByEscalatedTrue();
-        long resolved = ticketRepository.countByStatus("RESOLVED") + ticketRepository.countByStatus("CLOSED");
-        long breached = ticketRepository.countBySlaBreachedTrue();
+        accessControlService.requireStaff();
+        List<Ticket> scopedTickets = ticketService.findAll(null);
+        long total = scopedTickets.size();
+        long open = scopedTickets.stream().filter(t -> "OPEN".equals(t.getStatus())).count();
+        long inProgress = scopedTickets.stream().filter(t -> "IN_PROGRESS".equals(t.getStatus())).count();
+        long escalated = scopedTickets.stream().filter(Ticket::isEscalated).count();
+        long resolved = scopedTickets.stream().filter(t -> "RESOLVED".equals(t.getStatus()) || "CLOSED".equals(t.getStatus())).count();
+        long breached = scopedTickets.stream().filter(Ticket::isSlaBreached).count();
 
         double slaCompliance = total == 0 ? 100.0 : Math.round(((double) (total - breached) / total) * 1000.0) / 10.0;
-        long aiTriaged = ticketRepository.countByAiTriagedTrue();
+        long aiTriaged = scopedTickets.stream().filter(Ticket::isAiTriaged).count();
         long pendingApprovals = approvalRepository.countByStatus("PENDING");
 
         Map<String, Long> byPriority = Map.of(
-                "CRITICAL", ticketRepository.countByPriority("CRITICAL"),
-                "HIGH", ticketRepository.countByPriority("HIGH"),
-                "MEDIUM", ticketRepository.countByPriority("MEDIUM"),
-                "LOW", ticketRepository.countByPriority("LOW")
+                "CRITICAL", scopedTickets.stream().filter(t -> "CRITICAL".equals(t.getPriority())).count(),
+                "HIGH", scopedTickets.stream().filter(t -> "HIGH".equals(t.getPriority())).count(),
+                "MEDIUM", scopedTickets.stream().filter(t -> "MEDIUM".equals(t.getPriority())).count(),
+                "LOW", scopedTickets.stream().filter(t -> "LOW".equals(t.getPriority())).count()
         );
 
         return new DashboardAnalytics(
@@ -114,22 +117,6 @@ public class AnalyticsService {
                 byPriority,
                 ticketService.getAgentWorkloads()
         );
-    }
-
-    @RestController
-    @RequestMapping("/api/analytics")
-    public static class AnalyticsController {
-
-        private final AnalyticsService analyticsService;
-
-        public AnalyticsController(AnalyticsService analyticsService) {
-            this.analyticsService = analyticsService;
-        }
-
-        @GetMapping("/dashboard")
-        public DashboardAnalytics getDashboard() {
-            return analyticsService.getDashboardAnalytics();
-        }
     }
 
     @Bean

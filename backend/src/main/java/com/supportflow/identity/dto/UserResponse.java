@@ -8,7 +8,8 @@ public record UserResponse(
         String fullName,
         String email,
         String phone,
-        String role
+        String role,
+        Long organisationId
 ) {
     public static UserResponse fromEntity(UserModel user) {
         return new UserResponse(
@@ -17,7 +18,8 @@ public record UserResponse(
                 user.getFullName(),
                 user.getEmail(),
                 user.getPhone(),
-                user.getRole()
+                user.getRole(),
+                user.getOrganisationId()
         );
     }
 }

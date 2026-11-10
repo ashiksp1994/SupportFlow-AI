@@ -1,5 +1,6 @@
 package com.supportflow.identity.repository;
 
+import java.util.List;
 import java.util.Optional;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -9,5 +10,6 @@ import com.supportflow.identity.model.UserModel;
 
 public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long> {
     Optional<RefreshToken> findByToken(String token);
+    List<RefreshToken> findByUserAndRevokedFalse(UserModel user);
     void deleteByUser(UserModel user);
 }

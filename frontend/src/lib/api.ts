@@ -9,6 +9,7 @@ export interface UserResponse {
   email: string;
   phone?: string;
   role: 'ADMIN' | 'AGENT' | 'CUSTOMER' | string;
+  organisationId?: number | null;
 }
 
 export interface AuthResponse {
@@ -63,6 +64,7 @@ export interface KnowledgeArticle {
   category: string;
   tags: string;
   content: string;
+  organisationId?: number | null;
   createdBy: string;
   createdAt: string;
 }
@@ -74,7 +76,8 @@ export interface KnowledgeSearchResult {
   category: string;
   tags: string;
   relevanceScore: number;
-  citationSnippet: string;
+  snippet: string;
+  citationSnippet?: string;
 }
 
 export interface RagCitation {
@@ -82,16 +85,17 @@ export interface RagCitation {
   title: string;
   category: string;
   relevanceScore: number;
-  snippet: string;
+  excerpt: string;
+  snippet?: string;
 }
 
 export interface RagReplySuggestion {
   ticketId: number;
   ticketKey: string;
   suggestedReply: string;
+  confidence: number;
   citations: RagCitation[];
-  groundedConfidence: number;
-  providerUsed: string;
+  humanReviewRequired: boolean;
 }
 
 export interface AiTriageResult {
@@ -101,9 +105,10 @@ export interface AiTriageResult {
   predictedPriority: string;
   predictedSentiment: string;
   confidence: number;
-  reasoning: string;
-  suggestedTool: string;
-  providerUsed: string;
+  rationale: string;
+  reasoning?: string;
+  recommendedQueue: string;
+  autoEscalationRecommended: boolean;
 }
 
 export interface ConversationSummaryResult {
@@ -111,9 +116,9 @@ export interface ConversationSummaryResult {
   ticketKey: string;
   executiveSummary: string;
   keyPoints: string[];
+  customerSentiment?: string;
   recommendedNextStep: string;
   messageCount: number;
-  providerUsed: string;
 }
 
 export interface AiApprovalRequest {
@@ -209,7 +214,7 @@ export type CreateArticleFormValues = z.infer<typeof createArticleSchema>;
 export async function apiRequest<T>(path: string, token: string | null, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string> || {}),
+    ...((options.headers as Record<string, string>) || {}),
   };
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
@@ -223,4 +228,15 @@ export async function apiRequest<T>(path: string, token: string | null, options:
     throw new Error(errText || `HTTP ${res.status}`);
   }
   return res.json() as Promise<T>;
+}
+
+export async function logoutSession(accessToken: string | null, refreshToken: string | null): Promise<void> {
+  try {
+    await apiRequest<{ status: string }>('/api/auth/logout', accessToken, {
+      method: 'POST',
+      body: JSON.stringify({ refreshToken: refreshToken || '' }),
+    });
+  } catch {
+    // Always clear client session state even if network call fails
+  }
 }

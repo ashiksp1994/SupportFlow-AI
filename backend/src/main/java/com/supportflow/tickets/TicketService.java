@@ -6,28 +6,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PatchMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.supportflow.audit.AuditService;
 import com.supportflow.customers.CustomerProfile;
 import com.supportflow.customers.CustomerService;
+import com.supportflow.identity.security.AccessControlService;
 import com.supportflow.organisations.Organisation;
 import com.supportflow.organisations.OrganisationService;
 
@@ -65,18 +55,21 @@ public class TicketService {
     private final OrganisationService organisationService;
     private final AuditService auditService;
     private final ApplicationEventPublisher eventPublisher;
+    private final AccessControlService accessControlService;
 
     public TicketService(
             TicketRepository ticketRepository,
             CustomerService customerService,
             OrganisationService organisationService,
             AuditService auditService,
-            ApplicationEventPublisher eventPublisher) {
+            ApplicationEventPublisher eventPublisher,
+            AccessControlService accessControlService) {
         this.ticketRepository = ticketRepository;
         this.customerService = customerService;
         this.organisationService = organisationService;
         this.auditService = auditService;
         this.eventPublisher = eventPublisher;
+        this.accessControlService = accessControlService;
     }
 
     @Transactional(readOnly = true)
@@ -90,17 +83,22 @@ public class TicketService {
                 t.setSlaBreached(true);
             }
         }
-        return tickets;
+        return tickets.stream()
+                .filter(t -> accessControlService.canAccessTenant(t.getOrganisationId(), t.getCustomerEmail()))
+                .toList();
     }
 
     @Transactional(readOnly = true)
     public Ticket findById(Long id) {
-        return ticketRepository.findById(id)
+        Ticket ticket = ticketRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Ticket not found: " + id));
+        accessControlService.verifyTenantAccess(ticket.getOrganisationId(), ticket.getCustomerEmail());
+        return ticket;
     }
 
     @Transactional
     public Ticket createTicket(CreateTicketRequest request, String actor) {
+        AccessControlService.CallerContext caller = accessControlService.currentCaller();
         Ticket ticket = new Ticket();
         long nextNumber = ticketRepository.count() + 1001;
         ticket.setTicketKey("SF-" + nextNumber);
@@ -113,7 +111,10 @@ public class TicketService {
         ticket.setCategory(request.category() != null && !request.category().isBlank()
                 ? request.category().trim().toUpperCase()
                 : "GENERAL");
-        ticket.setAssignedAgentUsername(request.assignedAgentUsername());
+
+        if (!caller.httpAuthenticated() || caller.isStaff()) {
+            ticket.setAssignedAgentUsername(request.assignedAgentUsername());
+        }
 
         int slaHours = 24;
         if (request.customerId() != null) {
@@ -130,6 +131,17 @@ public class TicketService {
             if (customer.isVip() && slaHours > 4) {
                 slaHours = 4;
             }
+        } else if (caller.httpAuthenticated()) {
+            ticket.setCustomerName(caller.username());
+            ticket.setCustomerEmail(caller.email() != null ? caller.email() : caller.username());
+            if (caller.organisationId() != null) {
+                ticket.setOrganisationId(caller.organisationId());
+                Organisation org = organisationService.findById(caller.organisationId());
+                ticket.setOrganisationName(org.getName());
+                slaHours = org.getResolutionSlaHours();
+            }
+        } else if (actor != null && !actor.isBlank()) {
+            ticket.setCustomerEmail(actor);
         }
 
         if ("CRITICAL".equals(ticket.getPriority())) {
@@ -151,6 +163,7 @@ public class TicketService {
 
     @Transactional
     public Ticket assignAgent(Long id, String agentUsername, String actor) {
+        accessControlService.requireStaff();
         Ticket ticket = findById(id);
         ticket.setAssignedAgentUsername(agentUsername.trim());
         if ("OPEN".equals(ticket.getStatus())) {
@@ -166,6 +179,7 @@ public class TicketService {
 
     @Transactional
     public Ticket updateStatusAndPriority(Long id, UpdateTicketStatusRequest request, String actor) {
+        accessControlService.requireStaff();
         Ticket ticket = findById(id);
         ticket.setStatus(request.status().trim().toUpperCase());
         if (request.priority() != null && !request.priority().isBlank()) {
@@ -184,6 +198,7 @@ public class TicketService {
 
     @Transactional
     public Ticket escalateTicket(Long id, String reason, String actor) {
+        accessControlService.requireStaff();
         Ticket ticket = findById(id);
         ticket.setEscalated(true);
         ticket.setStatus("ESCALATED");
@@ -210,7 +225,8 @@ public class TicketService {
 
     @Transactional(readOnly = true)
     public List<AgentWorkloadItem> getAgentWorkloads() {
-        List<Ticket> activeTickets = ticketRepository.findAll().stream()
+        accessControlService.requireStaff();
+        List<Ticket> activeTickets = findAll(null).stream()
                 .filter(t -> t.getAssignedAgentUsername() != null && !t.getAssignedAgentUsername().isBlank())
                 .filter(t -> !"RESOLVED".equals(t.getStatus()) && !"CLOSED".equals(t.getStatus()))
                 .toList();
@@ -228,57 +244,5 @@ public class TicketService {
                     return new AgentWorkloadItem(entry.getKey(), list.size(), highCrit, escalated);
                 })
                 .toList();
-    }
-
-    @RestController
-    @RequestMapping("/api/tickets")
-    public static class TicketController {
-
-        private final TicketService ticketService;
-
-        public TicketController(TicketService ticketService) {
-            this.ticketService = ticketService;
-        }
-
-        @GetMapping
-        public List<Ticket> listTickets(@RequestParam(required = false) String status) {
-            return ticketService.findAll(status);
-        }
-
-        @GetMapping("/{id}")
-        public Ticket getTicket(@PathVariable Long id) {
-            return ticketService.findById(id);
-        }
-
-        @PostMapping
-        @ResponseStatus(HttpStatus.CREATED)
-        public Ticket createTicket(@Valid @RequestBody CreateTicketRequest request, Authentication auth) {
-            String actor = auth != null ? auth.getName() : "SYSTEM";
-            return ticketService.createTicket(request, actor);
-        }
-
-        @PatchMapping("/{id}/assign")
-        public Ticket assignAgent(@PathVariable Long id, @Valid @RequestBody AssignAgentRequest request, Authentication auth) {
-            String actor = auth != null ? auth.getName() : "SYSTEM";
-            return ticketService.assignAgent(id, request.agentUsername(), actor);
-        }
-
-        @PatchMapping("/{id}/status")
-        public Ticket updateStatus(@PathVariable Long id, @Valid @RequestBody UpdateTicketStatusRequest request, Authentication auth) {
-            String actor = auth != null ? auth.getName() : "SYSTEM";
-            return ticketService.updateStatusAndPriority(id, request, actor);
-        }
-
-        @PostMapping("/{id}/escalate")
-        public Ticket escalateTicket(@PathVariable Long id, @RequestBody(required = false) EscalateTicketRequest request, Authentication auth) {
-            String actor = auth != null ? auth.getName() : "SYSTEM";
-            String reason = request != null ? request.reason() : null;
-            return ticketService.escalateTicket(id, reason, actor);
-        }
-
-        @GetMapping("/workload")
-        public List<AgentWorkloadItem> getAgentWorkloads() {
-            return ticketService.getAgentWorkloads();
-        }
     }
 }
