@@ -1,6 +1,6 @@
 # ==============================================================================
-# SupportFlow AI — Local Development Compose Stack (Podman & Docker Compatible)
-# Phase 1: PostgreSQL + pgvector & SupportFlow Backend
+# SupportFlow AI — Full Cloud-Neutral Local Stack (Podman & Docker Compatible)
+# Services: PostgreSQL 17 (pgvector), Redis, MinIO (S3), Backend, and Frontend
 # ==============================================================================
 
 services:
@@ -21,6 +21,27 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: supportflow-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+  minio:
+    image: minio/minio:latest
+    container_name: supportflow-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-supportflow_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-supportflow_minio_dev_only}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - supportflow_miniodata:/data
 
   backend:
     build:
@@ -44,5 +65,17 @@ services:
       db:
         condition: service_healthy
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: supportflow-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
 volumes:
   supportflow_pgdata:
+  supportflow_miniodata:

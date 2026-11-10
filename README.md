@@ -1,55 +1,47 @@
 # SupportFlow AI
 
-> **AI-Native Customer Support Platform** — Intelligent ticket management, RAG-powered knowledge assistance with citations, controlled AI agent workflows, and enterprise-grade modular monolith architecture built with Java 25 LTS and Spring Boot 4.x.
+> **Enterprise AI-Native Customer Support Platform** — Intelligent ticket triage, RAG-powered knowledge assistance with verifiable citations, controlled AI agent tool calling with human approval gates, and a modular monolith architecture built with **Java 25 LTS**, **Spring Boot 4.1.2**, **Spring Modulith 2.1.2**, **PostgreSQL (`pgvector`)**, and **React 19 + TypeScript**.
 
 ---
 
 ## Product Overview
 
-**SupportFlow AI** is an enterprise-grade, AI-native customer support platform designed to demonstrate modern Java backend engineering, applied AI engineering with Spring AI and `pgvector`, and full-stack TypeScript/React development.
+**SupportFlow AI** transforms customer support operations by combining enterprise support domain management with grounded, auditable AI engineering:
 
-Rather than acting as a simple chatbot wrapper, SupportFlow AI integrates core customer support operations (multi-tenant organisations, omnichannel tickets, SLAs, agent workload routing, and audit trails) with grounded Retrieval-Augmented Generation (RAG), automated ticket triage, conversation summarisation, and human-in-the-loop tool calling.
-
----
-
-## Feature Status
-
-> **Transparency Note:** SupportFlow AI is developed iteratively across clearly defined milestones. Features below are marked with their actual implementation status. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for detailed tracking.
-
-| Capability | Status | Phase |
-| :--- | :---: | :---: |
-| Modular Monolith Backend Foundation (Java 25, Spring Boot 4.1.2, Gradle 9.9.0, Flyway) | **Implemented** | Phase 1 |
-| Spring Modulith Module Boundary Verification | **Implemented** | Phase 1 |
-| Baseline Identity Persistence & JWT Plumbing | **Implemented (Hardening in Phase 2)** | Phase 1 / 2 |
-| Security Hardening (DTO Validation, Refresh Token Rotation, RBAC Authorities) | **Planned (Next)** | Phase 2 |
-| Customer & Organisation Management | **Planned** | Phase 3 |
-| Customer Support Ticket Management, Agent Assignment & SLA Escalation | **Planned** | Phase 3 |
-| Conversation & Message Threads + S3 Attachments (MinIO) | **Planned** | Phase 3 |
-| Knowledge Base Management & `pgvector` RAG Document Search | **Planned** | Phase 4 |
-| AI Ticket Classification, Prioritisation & Summarisation | **Planned** | Phase 4 |
-| AI-Generated Response Suggestions with Citations & Controlled Tool Calling | **Planned** | Phase 4 |
-| Human-in-the-Loop Approval for Consequential AI Actions | **Planned** | Phase 4 |
-| React + TypeScript Agent Console, Analytics & Audit Logs | **Planned** | Phase 5 |
+1. **Customer & Organisation Management** (`organisations`, `customers`): Multi-tenant organisations with tiered SLA policies (`ENTERPRISE`, `BUSINESS`, `STANDARD`), response/resolution targets, and VIP customer profiles.
+2. **Customer Support Ticket Management** (`tickets`): Full ticket lifecycle (`OPEN`, `IN_PROGRESS`, `ESCALATED`, `RESOLVED`, `CLOSED`), automatic SLA deadline calculation, and breach tracking.
+3. **Agent Assignment & Workload Management** (`tickets`): Real-time agent assignment and active/high-priority/escalated workload balancing.
+4. **Omnichannel Conversation & Message Management** (`conversations`): Public customer/agent threads alongside internal-only agent notes and AI-assisted draft replies.
+5. **SLA Tracking & Event-Driven Escalation** (`tickets`, `notifications`): Automated SLA calculation and domain-event notifications when tickets are created or escalated.
+6. **AI Ticket Classification & Prioritisation** (`ai`): Semantic classification of ticket category, priority, urgency sentiment, confidence score, and triage reasoning.
+7. **Knowledge Base Management** (`knowledge`): Technical resolution article authoring, tagging, and automatic semantic vector embedding computation.
+8. **RAG-Powered Document Search** (`knowledge`): Hybrid vector cosine similarity + lexical search returning ranked knowledge base articles with similarity scores and citation snippets.
+9. **AI-Generated Response Suggestions with Citations** (`ai`): Synthesizes grounded customer replies with inline `[KB-xxx]` citations and structured source metadata.
+10. **Conversation Summarisation** (`ai`): Generates executive handoff summaries, key customer pain points, and recommended next steps.
+11. **AI Agents with Controlled Tool Calling** (`ai`): Supports consequential tools (`ESCALATE_TO_TIER3_ENGINEERING`, `ISSUE_SLA_CREDIT_REFUND`, `RESOLVE_AND_CLOSE_TICKET`).
+12. **Human-in-the-Loop Approval for Consequential Actions** (`ai`): Consequential AI tool calls enter a `PENDING` governance queue and execute only after an authorized `AGENT` or `ADMIN` approves them.
+13. **Support Analytics & Reporting** (`analytics`): Real-time KPI dashboard (ticket volume by priority, SLA compliance rate, AI triage coverage, pending approvals, agent workloads).
+14. **Immutable Audit Logs & Role-Based Access Control** (`identity`, `audit`): Hardened JWT authentication, refresh token rotation, `@EnableMethodSecurity` RBAC (`CUSTOMER`, `AGENT`, `ADMIN`), and tamper-evident audit logging.
 
 ---
 
-## Technology Stack
+## Feature Implementation Matrix
 
-### Backend (Active in Phase 1)
-- **Language & Runtime:** Java 25 LTS
-- **Framework:** Spring Boot 4.1.2, Spring Security, Spring Data JPA, Spring Validation, Spring Boot Actuator
-- **Modular Architecture:** Spring Modulith 2.1.2
-- **Database & Migrations:** PostgreSQL 17 (`pgvector/pgvector:pg17`), Flyway
-- **Build Tool:** Gradle 9.9.0 (with Foojay Java Toolchain auto-provisioning)
-- **Testing:** JUnit 5, Mockito, Spring Boot Test, Spring Modulith Test, Testcontainers 2.x, H2 (PostgreSQL compatibility mode for fast unit/slice tests)
-
-### Target Stack (Phases 3–5)
-- **AI Engineering:** Spring AI (OpenAI, Google Gemini, Ollama provider abstraction), PostgreSQL `pgvector`, RAG with source citations, controlled tool calling
-- **Caching & Messaging:** Redis
-- **Object Storage:** S3-compatible storage (MinIO locally)
-- **Frontend:** React, TypeScript, Vite, Tailwind CSS, shadcn/ui, TanStack Query, React Hook Form, Zod
-- **Frontend Testing:** Vitest, React Testing Library, Playwright
-- **DevOps & Observability:** GitHub Actions, Podman / Docker, OpenTelemetry, structured logging
+| Feature / Capability | Module | Status | Phase |
+| :--- | :--- | :---: | :---: |
+| Java 25 + Spring Boot 4.1.2 + Spring Modulith 2.1.2 + Flyway Foundation | `backend` | **Implemented & Verified** | Phase 1 |
+| Hardened JWT Auth, Refresh Token Rotation, RBAC & DTO Validation | `identity` | **Implemented & Verified** | Phase 2 |
+| Immutable Security & AI Governance Audit Trail (`/api/audit-logs`) | `audit` | **Implemented & Verified** | Phase 2 |
+| Multi-Tenant Organisations & Tiered SLA Policies (`/api/organisations`) | `organisations` | **Implemented & Verified** | Phase 3 |
+| Customer Profiles & VIP Escalation Rules (`/api/customers`) | `customers` | **Implemented & Verified** | Phase 3 |
+| Support Tickets, Agent Workload & SLA Escalation (`/api/tickets`) | `tickets`, `notifications` | **Implemented & Verified** | Phase 3 |
+| Omnichannel Conversations & S3/MinIO Attachments (`/api/tickets/{id}/messages`) | `conversations`, `storage` | **Implemented & Verified** | Phase 3 |
+| Knowledge Base & Vector/Hybrid RAG Search (`/api/knowledge`) | `knowledge` | **Implemented & Verified** | Phase 4 |
+| AI Ticket Triage, RAG Replies with Citations & Summarisation (`/api/ai`) | `ai` | **Implemented & Verified** | Phase 4 |
+| Controlled AI Agent Tool Calling & Human Approval Gate (`/api/ai/approvals`) | `ai` | **Implemented & Verified** | Phase 4 |
+| Executive Support Analytics & Demo Data Seeder (`/api/analytics/dashboard`) | `analytics` | **Implemented & Verified** | Phase 5 |
+| React 19 + TypeScript + Vite + Tailwind CSS + TanStack Query Console | `frontend` | **Implemented & Verified** | Phase 5 |
+| GitHub Actions CI/CD & Cloud-Neutral Podman/Docker Compose Stack | `.github/workflows` | **Implemented & Verified** | Phase 5 |
 
 ---
 
@@ -57,145 +49,89 @@ Rather than acting as a simple chatbot wrapper, SupportFlow AI integrates core c
 
 ```mermaid
 flowchart TB
-    subgraph Client["Frontend (Phase 5: React + TypeScript + Vite)"]
-        UI["Agent Console / Customer Portal / Admin Analytics"]
+    subgraph Client["Frontend Console (React 19 + TypeScript + Vite + Tailwind CSS)"]
+        UI["Agent Workspace · AI Copilot · RAG Explorer · Approval Center · Analytics · Audit Log"]
     end
 
-    subgraph Backend["SupportFlow AI Backend (Java 25 + Spring Boot 4.1.2 Modular Monolith)"]
+    subgraph Backend["SupportFlow AI Backend (Java 25 LTS + Spring Boot 4.1.2 Modular Monolith)"]
         direction TB
-        Identity["identity\n(Auth, JWT, RBAC)"]
-        Orgs["organisations\n(Tenants, Teams)"]
-        Customers["customers\n(Profiles, Contacts)"]
-        Tickets["tickets\n(Workflow, Assignment, SLA)"]
-        Conversations["conversations\n(Messages, Threads)"]
-        Knowledge["knowledge\n(Articles, Ingestion, Embeddings)"]
-        AI["ai\n(Spring AI, RAG, Triage, Tool Calling)"]
-        Notifications["notifications\n(Events, Alerts)"]
-        Analytics["analytics\n(SLA & Volume Metrics)"]
-        Storage["storage\n(S3 / MinIO Attachments)"]
-        Audit["audit\n(Compliance & Action Logs)"]
+        Identity["identity\n(JWT, Refresh Rotation, RBAC)"]
+        Orgs["organisations\n(Tenants, SLA Tiers)"]
+        Customers["customers\n(Profiles, VIPs)"]
+        Tickets["tickets\n(Lifecycle, Workload, SLA)"]
+        Conversations["conversations\n(Public & Internal Notes)"]
+        Knowledge["knowledge\n(KB Articles, Vector Search)"]
+        AI["ai\n(Triage, RAG Citations, Summarize, Tool Approvals)"]
+        Notifications["notifications\n(Domain Event Listeners)"]
+        Analytics["analytics\n(KPI Dashboard & Seeder)"]
+        Storage["storage\n(S3 / MinIO Presigned URLs)"]
+        Audit["audit\n(Security & AI Action Logs)"]
     end
 
-    subgraph Infra["Cloud-Neutral Infrastructure (Podman / Docker)"]
+    subgraph Infra["Cloud-Neutral Infrastructure (Podman / Docker Compose)"]
         PG[("PostgreSQL 17 + pgvector")]
-        Redis[("Redis (Phase 3)")]
-        MinIO[("MinIO / S3 (Phase 3)")]
+        Redis[("Redis 7")]
+        MinIO[("MinIO S3 Storage")]
     end
 
-    UI --> Backend
+    UI -->|REST JSON + Bearer JWT| Backend
     Backend --> PG
-    Backend -.-> Redis
-    Backend -.-> MinIO
+    Backend --> Redis
+    Backend --> MinIO
 ```
 
-For full architectural details, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/TECHNICAL_DECISIONS.md`](docs/TECHNICAL_DECISIONS.md).
-
 ---
 
-## Screenshots
+## Local Development & Quick Start
 
-*UI screenshots will be added in Phase 5 once the React + TypeScript Agent Console and Customer Portal are implemented.*
+### Option A: Instant Self-Contained Live Demo (No Container Daemon Required)
+The backend includes a `demo` profile that runs with an in-memory PostgreSQL-compatible database, executes all Flyway migrations (`V1`–`V4`), and seeds realistic Enterprise organisations, tickets, knowledge base articles, and pending AI tool approvals:
 
----
-
-## Local Development Instructions
-
-### Prerequisites
-- **Java 25 LTS** (or any Java runtime — Gradle 9.9.0 automatically provisions a JDK 25 toolchain via Foojay Resolver)
-- **Podman** (`podman` / `podman compose`) or **Docker** (`docker compose`)
-- **Git**
-
-### 1. Clone the Repository
 ```bash
-git clone https://github.com/ashiksp1994/SupportFlow-AI.git
-cd SupportFlow-AI
-```
+# Terminal 1: Start the Java 25 Spring Boot Backend on port 8080
+cd backend
+./gradlew bootRun --args='--spring.profiles.active=demo'
 
-### 2. Configure Environment Variables
+# Terminal 2: Start the React + TypeScript Frontend on port 5173
+cd frontend
+npm install
+npm run dev
+```
+Open `http://localhost:5173` and sign in with the pre-seeded demo credentials:
+- **Principal Support Engineer:** `sarah.chen` / `SupportFlow!2026`
+- **Platform Admin:** `admin` / `SupportFlow!2026`
+
+### Option B: Full Container Stack via Podman / Docker Compose
 ```bash
 cp .env.example .env
+podman compose up -d --build
+# Or: docker compose up -d --build
 ```
-
-### 3. Start PostgreSQL (`pgvector`) and Backend via Podman / Docker Compose
-```bash
-# Using Podman
-podman compose up -d db
-
-# Or using Docker
-docker compose up -d db
-```
-
-### 4. Run the Spring Boot Backend Locally
-```bash
-cd backend
-./gradlew bootRun
-```
-The backend starts on `http://localhost:8080` with health check at `http://localhost:8080/actuator/health`.
-
----
-
-## Environment Configuration
-
-All sensitive settings are externalised via environment variables (see [`.env.example`](.env.example)):
-
-| Variable | Description | Local Default |
-| :--- | :--- | :--- |
-| `SERVER_PORT` | HTTP server port | `8080` |
-| `SPRING_DATASOURCE_URL` | JDBC connection URL for PostgreSQL | `jdbc:postgresql://localhost:5432/supportflow` |
-| `SPRING_DATASOURCE_USERNAME` | Database username | `supportflow` |
-| `SPRING_DATASOURCE_PASSWORD` | Database password | `supportflow_dev_only` |
-| `JWT_SECRET` | Base64-encoded 256-bit HMAC signing key | Local dev-only placeholder |
-| `JWT_EXPIRATION_MS` | JWT validity duration in milliseconds | `3600000` |
-| `CORS_ALLOWED_ORIGINS` | Comma-separated list of allowed frontend origins | `http://localhost:5173,http://localhost:3000` |
-
-> **Security Warning:** Known pre-Phase-2 authentication vulnerabilities inherited from the legacy codebase are tracked as high-priority blockers in GitHub Issues (`#4`, `#5`, `#6`). Do **not** deploy to production until Phase 2 security hardening is complete.
 
 ---
 
 ## Testing Instructions
 
-Run unit tests, Spring Modulith verification tests, and integration tests from the `backend/` directory:
-
+### Backend (JUnit 5, Spring Modulith Verification, MockMvc Security & Integration Tests)
 ```bash
 cd backend
-
-# Run unit & Spring Modulith verification tests
-./gradlew test
-
-# Run integration tests
-./gradlew integrationTest
-
-# Run full build and verification suite
-./gradlew clean check
+./gradlew clean build check --no-daemon
 ```
 
----
-
-## Deployment Instructions
-
-Build the multi-stage container image (runs as non-root `supportflow` user on `eclipse-temurin:25-jre-alpine`):
-
+### Frontend (Vitest, React Testing Library & TypeScript Production Build)
 ```bash
-# Using Podman
-podman build -t supportflow-backend:latest ./backend
-
-# Using Docker
-docker build -t supportflow-backend:latest ./backend
+cd frontend
+npm test
+npm run build
 ```
 
 ---
 
-## Roadmap
+## Documentation Links
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the complete milestone breakdown:
-- **Phase 1:** Backend Foundation & Modernisation *(Completed)*
-- **Phase 2:** Security & Authentication Hardening *(Next)*
-- **Phase 3:** Core Support Domain (Organisations, Customers, Tickets, Conversations, SLA, Redis, MinIO)
-- **Phase 4:** AI-Native Capabilities (Spring AI, `pgvector` RAG with Citations, Triage, Controlled Tool Calling)
-- **Phase 5:** React + TypeScript Frontend Console, E2E Testing & GitHub Actions CI/CD
-
----
-
-## Contributing
-
-Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) for development workflow, branching rules, testing requirements, and documentation standards.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Modular monolith design, module boundaries, and database schema.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — Completed phases (Phases 1–5) and future enhancements.
+- [`docs/PROJECT_LOG.md`](docs/PROJECT_LOG.md) — Chronological engineering log across all phases.
+- [`docs/TECHNICAL_DECISIONS.md`](docs/TECHNICAL_DECISIONS.md) — Architecture Decision Records (ADRs).
+- [`CHANGELOG.md`](CHANGELOG.md) — Versioned release history.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — Engineering and contribution guidelines.

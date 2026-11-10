@@ -1,0 +1,50 @@
+name: SupportFlow AI CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  backend-verify:
+    name: Backend (Java 25 · Spring Boot 4.1 · Modulith & Integration Tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run Gradle Build, Unit, Modulith & Integration Tests
+        working-directory: ./backend
+        run: ./gradlew clean build check --no-daemon
+
+  frontend-verify:
+    name: Frontend (React 19 · TypeScript · Vitest & Vite Build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies, run Vitest & build production bundle
+        working-directory: ./frontend
+        run: |
+          npm install
+          npm test
+          npm run build

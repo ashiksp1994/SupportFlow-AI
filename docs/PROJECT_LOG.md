@@ -77,3 +77,27 @@ This document maintains a chronological engineering log of all development sessi
   - Issue `#4`: Remove `allowForRefreshToken` authentication bypass in `JwtRequestFilter` and implement secure refresh token handling.
   - Issue `#5`: Replace `UserModel` entity binding in `AuthController` with validated request/response `record` DTOs, prevent password hash serialization, and prevent mass role assignment.
   - Issue `#6`: Map user roles to `GrantedAuthority` in `UserDetailsServiceImpl` and enable `@EnableMethodSecurity`.
+
+---
+
+## Session 2 — 2026-11-10: Phases 2–5 Implementation (Security Hardening, Core Support Domain, RAG & AI Workflows, React Console & CI/CD)
+
+- **Date:** 2026-11-10
+- **Phases Completed:** Phase 2, Phase 3, Phase 4, and Phase 5
+- **Objectives:**
+  1. **Phase 2:** Remediate all three high-priority security blockers (Issues `#4`, `#5`, `#6`), implement refresh token rotation, RBAC method security, and the `audit` module.
+  2. **Phase 3:** Implement `organisations`, `customers`, `tickets` (with SLA calculation & workload balancing), `conversations`, `storage` (S3/MinIO attachments), and `notifications` (Issues `#8`, `#9`, `#10`).
+  3. **Phase 4:** Implement `knowledge` (articles, vector embeddings, hybrid RAG search) and `ai` (automated triage, RAG response suggestions with citations, conversation summarisation, and controlled AI tool calling with human approval gates) (Issues `#11`, `#12`, `#13`).
+  4. **Phase 5:** Implement `analytics` dashboard API & enterprise demo seeder, build the `frontend/` React 19 + TypeScript + Vite + Tailwind CSS + TanStack Query + React Hook Form + Zod application with Vitest tests, and add GitHub Actions CI/CD (`.github/workflows/ci.yml`) (Issues `#14`, `#15`, `#16`).
+
+### Tests Executed & Results
+- **Backend (`./gradlew clean build check --no-daemon`):**
+  - `SupportFlowApplicationTests` (Context & Spring Modulith verification across all 11 modules) — **PASSED**
+  - `AuthSecurityIntegrationTest` (Registration DTO safety, login token issuance, 401 handling, refresh bypass regression test) — **PASSED**
+  - `CoreSupportDomainTest` (Organisations, Customers, Tickets, SLA calculation, Escalation events, Conversations, Attachments) — **PASSED**
+  - `AiWorkflowsIntegrationTest` (Knowledge Base indexing, RAG vector search, AI Triage, Cited RAG replies, Summarisation, Human-approved AI tool execution) — **PASSED**
+  - `AnalyticsIntegrationTest` (Dashboard KPI calculation) — **PASSED**
+  - `UserServiceIntegrationTest` (Integration suite) — **PASSED**
+- **Frontend (`npm test && npm run build`):**
+  - `src/test/App.test.tsx` (Vitest + React Testing Library) — **PASSED**
+  - TypeScript compiler (`tsc -b`) & Vite production bundle (`vite build`) — **PASSED**
