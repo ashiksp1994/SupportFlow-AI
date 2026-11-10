@@ -1,11 +1,13 @@
 package com.supportflow.identity.security;
 
 import java.util.Date;
+import java.util.List;
 import java.util.function.Function;
 
 import javax.crypto.SecretKey;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Component;
 
@@ -26,6 +28,10 @@ public class JwtUtils {
     private SecretKey getSigningKey() {
         byte[] keyBytes = Decoders.BASE64.decode(secret);
         return Keys.hmacShaKeyFor(keyBytes);
+    }
+
+    public long getExpirationMs() {
+        return expirationMs;
     }
 
     public String extractUsername(String token) {
@@ -54,10 +60,14 @@ public class JwtUtils {
     }
 
     public String generateToken(UserDetails userDetails) {
+        List<String> roles = userDetails.getAuthorities() != null
+                ? userDetails.getAuthorities().stream().map(GrantedAuthority::getAuthority).toList()
+                : List.of();
         return Jwts.builder()
                 .subject(userDetails.getUsername())
+                .claim("roles", roles)
                 .issuedAt(new Date())
-                .expiration(new Date(new Date().getTime() + expirationMs))
+                .expiration(new Date(System.currentTimeMillis() + expirationMs))
                 .signWith(getSigningKey())
                 .compact();
     }

@@ -8,7 +8,6 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -18,21 +17,20 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * JWT authentication filter executed once per HTTP request.
- *
- * <p>SECURITY BLOCKER NOTE (Tracked in GitHub Issue #4 for Phase 2 remediation):
- * {@link #allowForRefreshToken(ExpiredJwtException, HttpServletRequest)} contains a legacy
- * authentication bypass when an expired JWT is presented with {@code isRefreshToken: true}.
- * Do not deploy to production before Phase 2 remediation.
+ * Hardened JWT authentication filter.
+ * Expired or malformed tokens are never granted authentication in SecurityContextHolder;
+ * token refresh is handled exclusively via persisted refresh tokens at POST /api/auth/refresh.
  */
 @Component
 public class JwtRequestFilter extends OncePerRequestFilter {
 
-    @Autowired
-    private UserDetailsService userDetailsService;
+    private final UserDetailsService userDetailsService;
+    private final JwtUtils jwtUtils;
 
-    @Autowired
-    private JwtUtils jwtUtils;
+    public JwtRequestFilter(UserDetailsService userDetailsService, JwtUtils jwtUtils) {
+        this.userDetailsService = userDetailsService;
+        this.jwtUtils = jwtUtils;
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
@@ -48,38 +46,22 @@ public class JwtRequestFilter extends OncePerRequestFilter {
             try {
                 username = jwtUtils.extractUsername(jwt);
             } catch (ExpiredJwtException e) {
-                String isRefreshToken = request.getHeader("isRefreshToken");
-                String requestURL = request.getRequestURL().toString();
-                if (isRefreshToken != null && isRefreshToken.equals("true") && requestURL.contains("refreshToken")) {
-                    allowForRefreshToken(e, request);
-                } else {
-                    request.setAttribute("exception", e);
-                }
+                request.setAttribute("jwt_expired", true);
             } catch (Exception e) {
-                request.setAttribute("exception", e);
+                request.setAttribute("jwt_invalid", true);
             }
         }
 
         if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
-
             UserDetails userDetails = this.userDetailsService.loadUserByUsername(username);
 
             if (jwtUtils.validateToken(jwt, userDetails)) {
-
-                UsernamePasswordAuthenticationToken usernamePasswordAuthenticationToken = new UsernamePasswordAuthenticationToken(
+                UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
                         userDetails, null, userDetails.getAuthorities());
-                usernamePasswordAuthenticationToken
-                        .setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                SecurityContextHolder.getContext().setAuthentication(usernamePasswordAuthenticationToken);
+                authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                SecurityContextHolder.getContext().setAuthentication(authToken);
             }
         }
         chain.doFilter(request, response);
-    }
-
-    private void allowForRefreshToken(ExpiredJwtException ex, HttpServletRequest request) {
-        UsernamePasswordAuthenticationToken usernamePasswordAuthenticationToken = new UsernamePasswordAuthenticationToken(
-                null, null, null);
-        SecurityContextHolder.getContext().setAuthentication(usernamePasswordAuthenticationToken);
-        request.setAttribute("claims", ex.getClaims());
     }
 }
