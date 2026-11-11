@@ -17,14 +17,18 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.supportflow.identity.security.AccessControlService;
+
 @RestController
 @RequestMapping("/api/tickets")
 public class TicketController {
 
     private final TicketService ticketService;
+    private final AccessControlService accessControlService;
 
-    public TicketController(TicketService ticketService) {
+    public TicketController(TicketService ticketService, AccessControlService accessControlService) {
         this.ticketService = ticketService;
+        this.accessControlService = accessControlService;
     }
 
     @GetMapping
@@ -48,7 +52,7 @@ public class TicketController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public Ticket createTicket(@Valid @RequestBody TicketService.CreateTicketRequest request, Authentication auth) {
-        String actor = auth != null ? auth.getName() : "SYSTEM";
+        String actor = accessControlService.requireActorUsername(auth);
         return ticketService.createTicket(request, actor);
     }
 
@@ -58,7 +62,7 @@ public class TicketController {
             @PathVariable Long id,
             @Valid @RequestBody TicketService.AssignAgentRequest request,
             Authentication auth) {
-        String actor = auth != null ? auth.getName() : "SYSTEM";
+        String actor = accessControlService.requireActorUsername(auth);
         return ticketService.assignAgent(id, request.agentUsername(), actor);
     }
 
@@ -68,7 +72,7 @@ public class TicketController {
             @PathVariable Long id,
             @Valid @RequestBody TicketService.UpdateTicketStatusRequest request,
             Authentication auth) {
-        String actor = auth != null ? auth.getName() : "SYSTEM";
+        String actor = accessControlService.requireActorUsername(auth);
         return ticketService.updateStatusAndPriority(id, request, actor);
     }
 
@@ -78,7 +82,7 @@ public class TicketController {
             @PathVariable Long id,
             @RequestBody(required = false) TicketService.EscalateTicketRequest request,
             Authentication auth) {
-        String actor = auth != null ? auth.getName() : "SYSTEM";
+        String actor = accessControlService.requireActorUsername(auth);
         String reason = request != null ? request.reason() : null;
         return ticketService.escalateTicket(id, reason, actor);
     }

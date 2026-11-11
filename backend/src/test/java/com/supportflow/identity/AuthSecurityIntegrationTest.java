@@ -17,7 +17,6 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
@@ -25,6 +24,7 @@ import com.supportflow.SupportFlowApplication;
 import com.supportflow.identity.model.UserModel;
 import com.supportflow.identity.repository.RefreshTokenRepository;
 import com.supportflow.identity.repository.UserRepository;
+import com.supportflow.identity.security.JwtUtils;
 import com.supportflow.identity.service.UserService;
 
 import static org.hamcrest.Matchers.containsString;
@@ -101,13 +101,11 @@ class AuthSecurityIntegrationTest {
         agent.setRole("AGENT");
         userService.saveUser(agent);
 
-        // Verify ROLE_AGENT authority mapping (Issue #6 fix)
         UserDetails details = userDetailsService.loadUserByUsername("bob_agent");
         assertTrue(details.getAuthorities().stream()
                 .anyMatch(a -> "ROLE_AGENT".equals(a.getAuthority())));
 
-        // Valid login
-        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+        mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
@@ -118,10 +116,8 @@ class AuthSecurityIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accessToken").isNotEmpty())
                 .andExpect(jsonPath("$.refreshToken").isNotEmpty())
-                .andExpect(jsonPath("$.user.role").value("AGENT"))
-                .andReturn();
+                .andExpect(jsonPath("$.user.role").value("AGENT"));
 
-        // Invalid password returns 401 Unauthorized, not 500
         mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -143,16 +139,53 @@ class AuthSecurityIntegrationTest {
 
         SecretKey key = Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtSecret));
         String expiredToken = Jwts.builder()
+                .issuer(JwtUtils.ISSUER)
                 .subject("eve_bypass")
                 .issuedAt(new Date(System.currentTimeMillis() - 120_000))
                 .expiration(new Date(System.currentTimeMillis() - 60_000))
                 .signWith(key)
                 .compact();
 
-        // Issue #4 regression check: attempting the legacy isRefreshToken header + URL bypass must fail with 401
         mockMvc.perform(get("/api/auth/me?refreshToken=true")
                         .header("Authorization", "Bearer " + expiredToken)
                         .header("isRefreshToken", "true"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void jwtWithMissingOrInvalidIssuerShouldBeRejectedWith401() throws Exception {
+        UserModel user = new UserModel();
+        user.setUsername("issuer_test_user");
+        user.setPassword("IssuerPass!123");
+        user.setRole("ADMIN");
+        userService.saveUser(user);
+
+        SecretKey key = Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtSecret));
+        long now = System.currentTimeMillis();
+
+        // 1. Signed token with NO issuer claim (null issuer) must be rejected
+        String missingIssuerToken = Jwts.builder()
+                .subject("issuer_test_user")
+                .issuedAt(new Date(now))
+                .expiration(new Date(now + 600_000))
+                .signWith(key)
+                .compact();
+
+        mockMvc.perform(get("/api/auth/me")
+                        .header("Authorization", "Bearer " + missingIssuerToken))
+                .andExpect(status().isUnauthorized());
+
+        // 2. Signed token with wrong issuer claim must be rejected
+        String wrongIssuerToken = Jwts.builder()
+                .issuer("forged-external-issuer")
+                .subject("issuer_test_user")
+                .issuedAt(new Date(now))
+                .expiration(new Date(now + 600_000))
+                .signWith(key)
+                .compact();
+
+        mockMvc.perform(get("/api/auth/me")
+                        .header("Authorization", "Bearer " + wrongIssuerToken))
                 .andExpect(status().isUnauthorized());
     }
 }

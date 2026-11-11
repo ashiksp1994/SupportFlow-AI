@@ -15,14 +15,18 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.supportflow.identity.security.AccessControlService;
+
 @RestController
 @RequestMapping("/api/organisations")
 public class OrganisationController {
 
     private final OrganisationService organisationService;
+    private final AccessControlService accessControlService;
 
-    public OrganisationController(OrganisationService organisationService) {
+    public OrganisationController(OrganisationService organisationService, AccessControlService accessControlService) {
         this.organisationService = organisationService;
+        this.accessControlService = accessControlService;
     }
 
     @GetMapping
@@ -41,7 +45,7 @@ public class OrganisationController {
     public Organisation createOrganisation(
             @Valid @RequestBody OrganisationService.CreateOrganisationRequest request,
             Authentication auth) {
-        String actor = auth != null ? auth.getName() : "SYSTEM";
+        String actor = accessControlService.requireActorUsername(auth);
         return organisationService.createOrganisation(request, actor);
     }
 }

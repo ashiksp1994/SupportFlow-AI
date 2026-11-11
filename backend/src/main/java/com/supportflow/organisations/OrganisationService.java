@@ -36,13 +36,13 @@ public class OrganisationService {
 
     @Transactional(readOnly = true)
     public List<Organisation> findAll() {
-        AccessControlService.CallerContext caller = accessControlService.currentCaller();
-        if (caller.httpAuthenticated() && !caller.isAdmin() && caller.organisationId() != null) {
+        AccessControlService.CallerContext caller = accessControlService.requireAuthenticated();
+        if (!caller.isAdmin() && caller.organisationId() != null) {
             return organisationRepository.findById(caller.organisationId())
                     .map(List::of)
                     .orElse(List.of());
         }
-        if (caller.httpAuthenticated() && caller.isCustomer()) {
+        if (caller.isCustomer()) {
             return List.of();
         }
         return organisationRepository.findAll();

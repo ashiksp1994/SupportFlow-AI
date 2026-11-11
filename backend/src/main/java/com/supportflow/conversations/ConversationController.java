@@ -14,14 +14,18 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.supportflow.identity.security.AccessControlService;
+
 @RestController
 @RequestMapping("/api/tickets/{ticketId}/messages")
 public class ConversationController {
 
     private final ConversationService conversationService;
+    private final AccessControlService accessControlService;
 
-    public ConversationController(ConversationService conversationService) {
+    public ConversationController(ConversationService conversationService, AccessControlService accessControlService) {
         this.conversationService = conversationService;
+        this.accessControlService = accessControlService;
     }
 
     @GetMapping
@@ -35,7 +39,7 @@ public class ConversationController {
             @PathVariable Long ticketId,
             @Valid @RequestBody ConversationService.AddMessageRequest request,
             Authentication auth) {
-        String actor = auth != null ? auth.getName() : "SYSTEM";
+        String actor = accessControlService.requireActorUsername(auth);
         return conversationService.addMessage(ticketId, request, actor);
     }
 }

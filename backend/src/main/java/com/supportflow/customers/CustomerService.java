@@ -45,11 +45,11 @@ public class CustomerService {
 
     @Transactional(readOnly = true)
     public List<CustomerProfile> findAll() {
-        AccessControlService.CallerContext caller = accessControlService.currentCaller();
-        if (caller.httpAuthenticated() && !caller.isAdmin() && caller.organisationId() != null) {
+        AccessControlService.CallerContext caller = accessControlService.requireAuthenticated();
+        if (!caller.isAdmin() && caller.organisationId() != null) {
             return customerRepository.findByOrganisationId(caller.organisationId());
         }
-        if (caller.httpAuthenticated() && caller.isCustomer()) {
+        if (caller.isCustomer()) {
             return customerRepository.findAll().stream()
                     .filter(c -> accessControlService.canAccessTenant(c.getOrganisationId(), c.getEmail()))
                     .toList();

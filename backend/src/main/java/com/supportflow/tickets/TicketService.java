@@ -74,6 +74,7 @@ public class TicketService {
 
     @Transactional(readOnly = true)
     public List<Ticket> findAll(String status) {
+        accessControlService.requireAuthenticated();
         List<Ticket> tickets = (status != null && !status.isBlank() && !"ALL".equalsIgnoreCase(status))
                 ? ticketRepository.findByStatusOrderByCreatedAtDesc(status.toUpperCase())
                 : ticketRepository.findAllByOrderByCreatedAtDesc();
@@ -98,7 +99,7 @@ public class TicketService {
 
     @Transactional
     public Ticket createTicket(CreateTicketRequest request, String actor) {
-        AccessControlService.CallerContext caller = accessControlService.currentCaller();
+        AccessControlService.CallerContext caller = accessControlService.requireAuthenticated();
         Ticket ticket = new Ticket();
         long nextNumber = ticketRepository.count() + 1001;
         ticket.setTicketKey("SF-" + nextNumber);
@@ -112,7 +113,7 @@ public class TicketService {
                 ? request.category().trim().toUpperCase()
                 : "GENERAL");
 
-        if (!caller.httpAuthenticated() || caller.isStaff()) {
+        if (caller.isStaff()) {
             ticket.setAssignedAgentUsername(request.assignedAgentUsername());
         }
 
@@ -131,7 +132,10 @@ public class TicketService {
             if (customer.isVip() && slaHours > 4) {
                 slaHours = 4;
             }
-        } else if (caller.httpAuthenticated()) {
+        } else if (actor != null && !actor.isBlank() && !"SYSTEM".equalsIgnoreCase(actor) && caller.isAdmin()) {
+            ticket.setCustomerName(actor);
+            ticket.setCustomerEmail(actor);
+        } else {
             ticket.setCustomerName(caller.username());
             ticket.setCustomerEmail(caller.email() != null ? caller.email() : caller.username());
             if (caller.organisationId() != null) {
@@ -140,8 +144,6 @@ public class TicketService {
                 ticket.setOrganisationName(org.getName());
                 slaHours = org.getResolutionSlaHours();
             }
-        } else if (actor != null && !actor.isBlank()) {
-            ticket.setCustomerEmail(actor);
         }
 
         if ("CRITICAL".equals(ticket.getPriority())) {

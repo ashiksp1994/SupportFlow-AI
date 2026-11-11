@@ -1,6 +1,7 @@
 package com.supportflow.identity.security;
 
 import java.util.Objects;
+import java.util.function.Supplier;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
@@ -16,10 +17,15 @@ import com.supportflow.identity.repository.UserRepository;
 
 /**
  * Central multi-tenant and role-based access control enforcement service.
- * Enforces horizontal (organisation/customer) isolation and vertical (role) separation.
+ * Enforces fail-closed authentication, horizontal (organisation/customer) isolation,
+ * and vertical (role) separation. Unauthenticated or anonymous callers are never
+ * granted SYSTEM or ADMIN privileges.
  */
 @Service
 public class AccessControlService {
+
+    private static final ThreadLocal<Boolean> SYSTEM_EXECUTION_CONTEXT =
+            ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     public record CallerContext(
             Long userId,
@@ -30,15 +36,15 @@ public class AccessControlService {
             boolean httpAuthenticated
     ) {
         public boolean isAdmin() {
-            return role == UserRole.ADMIN;
+            return httpAuthenticated && role == UserRole.ADMIN;
         }
 
         public boolean isStaff() {
-            return role == UserRole.ADMIN || role == UserRole.AGENT;
+            return httpAuthenticated && (role == UserRole.ADMIN || role == UserRole.AGENT);
         }
 
         public boolean isCustomer() {
-            return role == UserRole.CUSTOMER;
+            return httpAuthenticated && role == UserRole.CUSTOMER;
         }
     }
 
@@ -48,10 +54,38 @@ public class AccessControlService {
         this.userRepository = userRepository;
     }
 
+    /**
+     * Executes an internal system operation (such as non-production startup seeding or
+     * trusted background maintenance) within an explicit system context.
+     */
+    public <T> T supplyAsSystem(Supplier<T> action) {
+        boolean previous = Boolean.TRUE.equals(SYSTEM_EXECUTION_CONTEXT.get());
+        SYSTEM_EXECUTION_CONTEXT.set(Boolean.TRUE);
+        try {
+            return action.get();
+        } finally {
+            if (previous) {
+                SYSTEM_EXECUTION_CONTEXT.set(Boolean.TRUE);
+            } else {
+                SYSTEM_EXECUTION_CONTEXT.remove();
+            }
+        }
+    }
+
+    public void runAsSystem(Runnable action) {
+        supplyAsSystem(() -> {
+            action.run();
+            return null;
+        });
+    }
+
     public CallerContext currentCaller() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null || !auth.isAuthenticated() || auth instanceof AnonymousAuthenticationToken) {
-            return new CallerContext(null, "SYSTEM", null, UserRole.ADMIN, null, false);
+            if (Boolean.TRUE.equals(SYSTEM_EXECUTION_CONTEXT.get())) {
+                return new CallerContext(null, "SYSTEM", null, UserRole.ADMIN, null, true);
+            }
+            return new CallerContext(null, "ANONYMOUS", null, null, null, false);
         }
 
         String username = auth.getName();
@@ -85,9 +119,26 @@ public class AccessControlService {
         return UserRole.CUSTOMER;
     }
 
-    public void requireStaff() {
+    public CallerContext requireAuthenticated() {
         CallerContext caller = currentCaller();
-        if (caller.httpAuthenticated() && !caller.isStaff()) {
+        if (!caller.httpAuthenticated() || caller.role() == null) {
+            throw new ResponseStatusException(
+                    HttpStatus.UNAUTHORIZED,
+                    "Authentication required: anonymous or unauthenticated access is forbidden.");
+        }
+        return caller;
+    }
+
+    public String requireActorUsername(Authentication auth) {
+        if (auth != null && auth.isAuthenticated() && !(auth instanceof AnonymousAuthenticationToken)) {
+            return auth.getName();
+        }
+        return requireAuthenticated().username();
+    }
+
+    public void requireStaff() {
+        CallerContext caller = requireAuthenticated();
+        if (!caller.isStaff()) {
             throw new ResponseStatusException(
                     HttpStatus.FORBIDDEN,
                     "Access denied: staff role (ADMIN or AGENT) required.");
@@ -95,8 +146,8 @@ public class AccessControlService {
     }
 
     public void requireAdmin() {
-        CallerContext caller = currentCaller();
-        if (caller.httpAuthenticated() && !caller.isAdmin()) {
+        CallerContext caller = requireAuthenticated();
+        if (!caller.isAdmin()) {
             throw new ResponseStatusException(
                     HttpStatus.FORBIDDEN,
                     "Access denied: ADMIN role required.");
@@ -104,14 +155,11 @@ public class AccessControlService {
     }
 
     /**
-     * Verifies that the current caller is permitted to access data belonging to {@code resourceOrganisationId}
-     * or owned by {@code resourceOwnerIdentifier} (email or username).
+     * Verifies that the current caller is authenticated and permitted to access data belonging to
+     * {@code resourceOrganisationId} or owned by {@code resourceOwnerIdentifier} (email or username).
      */
     public void verifyTenantAccess(Long resourceOrganisationId, String resourceOwnerIdentifier) {
-        CallerContext caller = currentCaller();
-        if (!caller.httpAuthenticated()) {
-            return;
-        }
+        CallerContext caller = requireAuthenticated();
 
         // Platform ADMINs have global visibility; platform AGENTs without a single-tenant lock manage cross-org queues.
         if (caller.isAdmin()) {
@@ -142,6 +190,8 @@ public class AccessControlService {
                     HttpStatus.FORBIDDEN,
                     "Access denied: customer is not authorized to access this resource.");
         }
+
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied.");
     }
 
     public boolean canAccessTenant(Long resourceOrganisationId, String resourceOwnerIdentifier) {

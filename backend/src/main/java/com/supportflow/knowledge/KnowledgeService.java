@@ -1,17 +1,15 @@
 package com.supportflow.knowledge;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 import jakarta.validation.constraints.NotBlank;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -23,27 +21,13 @@ import com.supportflow.identity.security.AccessControlService;
 
 /**
  * Knowledge Base & Grounded RAG Retrieval Service.
- * Segments articles into searchable chunks, computes 16-dimensional semantic feature + lexical embeddings,
- * enforces multi-organisation visibility, and filters out results below the minimum relevance threshold
- * so that AI suggestions never fabricate citations when the KB lacks evidence.
+ * Segments articles into searchable chunks, computes embeddings via {@link EmbeddingProviderClient}
+ * (supporting external OpenAI-compatible embeddings or deterministic 12-dimension concept vectors
+ * with hybrid lexical overlap scoring), enforces multi-organisation visibility, and filters out
+ * results below the minimum relevance threshold so AI suggestions never fabricate citations.
  */
 @Service
 public class KnowledgeService {
-
-    private static final List<String[]> SEMANTIC_DIMENSIONS = List.of(
-            new String[]{"sso", "saml", "oidc", "oauth", "login", "authentication", "mfa", "password", "token", "jwt", "certificate", "idp", "okta", "entra"},
-            new String[]{"billing", "invoice", "refund", "credit", "subscription", "charge", "stripe", "payment", "plan", "vat", "pricing"},
-            new String[]{"api", "webhook", "rate", "limit", "429", "500", "timeout", "sdk", "endpoint", "payload", "rest", "graphql"},
-            new String[]{"sla", "outage", "critical", "incident", "downtime", "latency", "degraded", "escalation", "production", "p1"},
-            new String[]{"database", "postgres", "pgvector", "migration", "backup", "replication", "query", "index", "lock", "connection"},
-            new String[]{"security", "rbac", "permission", "role", "audit", "compliance", "gdpr", "encryption", "tls", "vulnerability"},
-            new String[]{"rag", "ai", "embedding", "vector", "knowledge", "citation", "agent", "approval", "model", "prompt"},
-            new String[]{"ui", "frontend", "browser", "dashboard", "export", "csv", "notification", "email", "slack", "attachment"},
-            new String[]{"certificate", "x509", "pem", "signature", "401", "rotation", "metadata", "assertion", "signing"},
-            new String[]{"retry", "backoff", "jitter", "idempotency", "hmac", "sha256", "delivery", "queue", "dlq"},
-            new String[]{"credit", "pro-rata", "uptime", "breach", "tier", "enterprise", "business", "contract"},
-            new String[]{"tenant", "organisation", "isolation", "cross-tenant", "customer", "workspace", "domain"}
-    );
 
     private static final Set<String> STOP_WORDS = Set.of(
             "the", "and", "for", "with", "that", "this", "from", "are", "was", "were", "have", "has",
@@ -69,30 +53,48 @@ public class KnowledgeService {
             String category,
             String tags,
             String snippet,
-            double relevanceScore
-    ) {}
+            double relevanceScore,
+            String embeddingProvider,
+            boolean fallbackUsed
+    ) {
+        public KnowledgeSearchResult(
+                Long id,
+                String articleKey,
+                String title,
+                String category,
+                String tags,
+                String snippet,
+                double relevanceScore) {
+            this(id, articleKey, title, category, tags, snippet, relevanceScore, "local-hybrid-lexical", true);
+        }
+    }
 
     private final KnowledgeArticleRepository articleRepository;
     private final KnowledgeChunkRepository chunkRepository;
     private final AuditService auditService;
     private final AccessControlService accessControlService;
+    private final EmbeddingProviderClient embeddingProviderClient;
     private final double minRelevanceThreshold;
 
+    @Autowired
     public KnowledgeService(
             KnowledgeArticleRepository articleRepository,
             KnowledgeChunkRepository chunkRepository,
             AuditService auditService,
             AccessControlService accessControlService,
+            EmbeddingProviderClient embeddingProviderClient,
             @Value("${app.ai.rag.min-relevance-threshold:0.25}") double minRelevanceThreshold) {
         this.articleRepository = articleRepository;
         this.chunkRepository = chunkRepository;
         this.auditService = auditService;
         this.accessControlService = accessControlService;
+        this.embeddingProviderClient = embeddingProviderClient;
         this.minRelevanceThreshold = minRelevanceThreshold;
     }
 
     @Transactional(readOnly = true)
     public List<KnowledgeArticle> listPublishedArticles() {
+        accessControlService.requireAuthenticated();
         return articleRepository.findByPublishedTrueOrderByUpdatedAtDesc().stream()
                 .filter(this::isArticleVisibleToCaller)
                 .toList();
@@ -100,6 +102,7 @@ public class KnowledgeService {
 
     @Transactional(readOnly = true)
     public KnowledgeArticle getById(Long id) {
+        accessControlService.requireAuthenticated();
         KnowledgeArticle article = articleRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Knowledge article not found: " + id));
         if (!isArticleVisibleToCaller(article)) {
@@ -109,9 +112,9 @@ public class KnowledgeService {
     }
 
     @Transactional(readOnly = true)
-    public List<KnowledgeChunk> getChunksForArticle(Long articleId) {
-        getById(articleId);
-        return chunkRepository.findByArticleIdOrderByChunkIndexAsc(articleId);
+    public List<KnowledgeChunk> getChunksForArticle(Long id) {
+        getById(id);
+        return chunkRepository.findByArticleIdOrderByChunkIndexAsc(id);
     }
 
     @Transactional
@@ -121,8 +124,8 @@ public class KnowledgeService {
         long nextNum = articleRepository.count() + 101;
         article.setArticleKey("KB-" + nextNum);
         article.setTitle(request.title().trim());
-        article.setCategory(request.category().trim().toUpperCase());
-        article.setTags(request.tags() != null ? request.tags().trim().toLowerCase() : "");
+        article.setCategory(request.category().trim().toUpperCase(Locale.ROOT));
+        article.setTags(request.tags() != null ? request.tags().trim().toLowerCase(Locale.ROOT) : "");
         article.setContent(request.content().trim());
         article.setOrganisationId(request.organisationId());
         article.setCreatedBy(actor);
@@ -133,7 +136,6 @@ public class KnowledgeService {
 
         KnowledgeArticle saved = articleRepository.save(article);
 
-        // Segment article content into grounded chunks and index each chunk's vector
         List<String> segments = chunkContent(saved.getTitle(), saved.getContent());
         List<KnowledgeChunk> chunks = new ArrayList<>();
         for (int i = 0; i < segments.size(); i++) {
@@ -167,10 +169,8 @@ public class KnowledgeService {
             return List.of();
         }
 
-        Map<Long, KnowledgeArticle> articleMap = visibleArticles.stream()
-                .collect(Collectors.toMap(KnowledgeArticle::getId, a -> a));
-
-        double[] queryVec = parseVector(computeEmbedding(query));
+        EmbeddingProviderClient.EmbeddingResult queryEmbedding = embeddingProviderClient.embedWithFallback(query);
+        double[] queryVec = parseVector(queryEmbedding.vectorCsv());
         List<String> meaningfulTokens = Arrays.stream(query.toLowerCase(Locale.ROOT).split("[^a-z0-9]+"))
                 .filter(t -> t.length() >= 3 && !STOP_WORDS.contains(t))
                 .distinct()
@@ -202,7 +202,6 @@ public class KnowledgeService {
                     article.getTags(),
                     article.getContent());
 
-            // Require at least some lexical or strong semantic signal; never clamp to an artificial floor.
             double combinedScore = Math.min(0.99, (bestChunkCosine * 0.50) + (lexicalScore * 0.50));
             if (lexicalScore == 0.0 && bestChunkCosine < 0.65) {
                 combinedScore = 0.0;
@@ -216,7 +215,9 @@ public class KnowledgeService {
                         article.getCategory(),
                         article.getTags(),
                         bestSnippet,
-                        Math.round(combinedScore * 100.0) / 100.0
+                        Math.round(combinedScore * 100.0) / 100.0,
+                        queryEmbedding.provider(),
+                        queryEmbedding.fallbackUsed()
                 ));
             }
         }
@@ -228,7 +229,9 @@ public class KnowledgeService {
     }
 
     private boolean isArticleVisibleToCaller(KnowledgeArticle article) {
+        AccessControlService.CallerContext caller = accessControlService.requireAuthenticated();
         if (article.getOrganisationId() == null) {
+            // Global runbooks are visible to all authenticated users unless a tenant-bound agent is restricted to tenant-only view
             return true;
         }
         return accessControlService.canAccessTenant(article.getOrganisationId(), null);
@@ -281,35 +284,12 @@ public class KnowledgeService {
     }
 
     public String computeEmbedding(String text) {
-        String lower = text == null ? "" : text.toLowerCase(Locale.ROOT);
-        double[] vec = new double[SEMANTIC_DIMENSIONS.size()];
-        double norm = 0.0;
-
-        for (int i = 0; i < SEMANTIC_DIMENSIONS.size(); i++) {
-            double score = 0.0;
-            for (String kw : SEMANTIC_DIMENSIONS.get(i)) {
-                if (lower.contains(kw)) {
-                    score += 1.0;
-                }
-            }
-            vec[i] = score;
-            norm += score * score;
-        }
-
-        double denom = norm > 0 ? Math.sqrt(norm) : 1.0;
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < vec.length; i++) {
-            if (i > 0) {
-                sb.append(",");
-            }
-            sb.append(String.format(Locale.ROOT, "%.4f", vec[i] / denom));
-        }
-        return sb.toString();
+        return embeddingProviderClient.embedWithFallback(text).vectorCsv();
     }
 
     private double[] parseVector(String vectorStr) {
         if (vectorStr == null || vectorStr.isBlank()) {
-            return new double[SEMANTIC_DIMENSIONS.size()];
+            return new double[EmbeddingProviderClient.defaultDimensionCount()];
         }
         String[] parts = vectorStr.split(",");
         double[] vec = new double[parts.length];

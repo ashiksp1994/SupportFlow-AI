@@ -590,8 +590,21 @@ export default function App() {
 
                   {latestTriage && latestTriage.ticketId === activeTicket.id && (
                     <div className="p-3.5 rounded-lg bg-slate-950 border border-indigo-500/40 text-xs space-y-1">
-                      <div className="font-semibold text-indigo-300">
-                        AI Triage Result (Confidence: {(latestTriage.confidence * 100).toFixed(0)}%)
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-indigo-300">
+                          AI Triage Result (Confidence: {(latestTriage.confidence * 100).toFixed(0)}%)
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-mono ${
+                            latestTriage.fallbackUsed
+                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                              : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                          }`}
+                        >
+                          {latestTriage.fallbackUsed
+                            ? `Mode: Local Deterministic Fallback (${latestTriage.modelUsed || 'supportflow-grounded-v2'})`
+                            : `Provider: ${latestTriage.providerUsed} (${latestTriage.modelUsed})`}
+                        </span>
                       </div>
                       <p className="text-slate-300">{latestTriage.rationale || latestTriage.reasoning}</p>
                     </div>
@@ -599,17 +612,30 @@ export default function App() {
 
                   {latestRagSuggestion && latestRagSuggestion.ticketId === activeTicket.id && (
                     <div className="p-3.5 rounded-lg bg-emerald-950/30 border border-emerald-500/30 text-xs space-y-2">
-                      <div className="font-semibold text-emerald-300 flex items-center gap-1.5">
-                        {latestRagSuggestion.citations.length === 0 ? (
-                          <>
-                            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                            <span className="text-amber-300">
-                              Insufficient KB Evidence — Citations Withheld (0 matches above threshold)
-                            </span>
-                          </>
-                        ) : (
-                          <span>Grounded Knowledge Base Citations ({latestRagSuggestion.citations.length})</span>
-                        )}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-semibold text-emerald-300 flex items-center gap-1.5">
+                          {latestRagSuggestion.citations.length === 0 ? (
+                            <>
+                              <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                              <span className="text-amber-300">
+                                Insufficient KB Evidence — Citations Withheld (0 matches above threshold)
+                              </span>
+                            </>
+                          ) : (
+                            <span>Grounded Knowledge Base Citations ({latestRagSuggestion.citations.length})</span>
+                          )}
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-mono ${
+                            latestRagSuggestion.fallbackUsed
+                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                              : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                          }`}
+                        >
+                          {latestRagSuggestion.fallbackUsed
+                            ? `Mode: Local Deterministic Fallback (${latestRagSuggestion.modelUsed || 'supportflow-grounded-v2'})`
+                            : `Provider: ${latestRagSuggestion.providerUsed} (${latestRagSuggestion.modelUsed})`}
+                        </span>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                         {latestRagSuggestion.citations.map((c) => (

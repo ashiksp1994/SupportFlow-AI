@@ -16,14 +16,18 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.supportflow.identity.security.AccessControlService;
+
 @RestController
 @RequestMapping("/api/ai")
 public class AiController {
 
     private final AiOrchestrationService aiService;
+    private final AccessControlService accessControlService;
 
-    public AiController(AiOrchestrationService aiService) {
+    public AiController(AiOrchestrationService aiService, AccessControlService accessControlService) {
         this.aiService = aiService;
+        this.accessControlService = accessControlService;
     }
 
     @PostMapping("/tickets/{ticketId}/triage")
@@ -31,7 +35,7 @@ public class AiController {
     public AiOrchestrationService.AiTriageResult triageTicket(
             @PathVariable Long ticketId,
             Authentication auth) {
-        String actor = auth != null ? auth.getName() : "AI_COPILOT";
+        String actor = accessControlService.requireActorUsername(auth);
         return aiService.triageTicket(ticketId, actor);
     }
 
@@ -40,7 +44,7 @@ public class AiController {
     public AiOrchestrationService.RagReplySuggestion suggestReply(
             @PathVariable Long ticketId,
             Authentication auth) {
-        String actor = auth != null ? auth.getName() : "AI_COPILOT";
+        String actor = accessControlService.requireActorUsername(auth);
         return aiService.suggestReplyWithCitations(ticketId, actor);
     }
 
@@ -49,7 +53,7 @@ public class AiController {
     public AiOrchestrationService.ConversationSummaryResult summarize(
             @PathVariable Long ticketId,
             Authentication auth) {
-        String actor = auth != null ? auth.getName() : "AI_COPILOT";
+        String actor = accessControlService.requireActorUsername(auth);
         return aiService.summarizeConversation(ticketId, actor);
     }
 
@@ -60,7 +64,7 @@ public class AiController {
             @PathVariable Long ticketId,
             @Valid @RequestBody AiOrchestrationService.ProposeToolCallRequest request,
             Authentication auth) {
-        String actor = auth != null ? auth.getName() : "AI_COPILOT";
+        String actor = accessControlService.requireActorUsername(auth);
         return aiService.proposeToolAction(ticketId, request, actor);
     }
 
@@ -76,7 +80,7 @@ public class AiController {
             @PathVariable Long approvalId,
             @Valid @RequestBody AiOrchestrationService.ApprovalDecisionRequest decision,
             Authentication auth) {
-        String reviewer = auth != null ? auth.getName() : "SUPERVISOR";
+        String reviewer = accessControlService.requireActorUsername(auth);
         return aiService.decideApproval(approvalId, decision, reviewer);
     }
 }

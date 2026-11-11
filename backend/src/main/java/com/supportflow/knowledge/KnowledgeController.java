@@ -16,14 +16,18 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.supportflow.identity.security.AccessControlService;
+
 @RestController
 @RequestMapping("/api/knowledge")
 public class KnowledgeController {
 
     private final KnowledgeService knowledgeService;
+    private final AccessControlService accessControlService;
 
-    public KnowledgeController(KnowledgeService knowledgeService) {
+    public KnowledgeController(KnowledgeService knowledgeService, AccessControlService accessControlService) {
         this.knowledgeService = knowledgeService;
+        this.accessControlService = accessControlService;
     }
 
     @GetMapping("/articles")
@@ -47,7 +51,7 @@ public class KnowledgeController {
     public KnowledgeArticle createArticle(
             @Valid @RequestBody KnowledgeService.CreateArticleRequest request,
             Authentication auth) {
-        String actor = auth != null ? auth.getName() : "SYSTEM";
+        String actor = accessControlService.requireActorUsername(auth);
         return knowledgeService.createArticle(request, actor);
     }
 

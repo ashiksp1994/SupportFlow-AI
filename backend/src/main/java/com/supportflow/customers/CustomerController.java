@@ -15,14 +15,18 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.supportflow.identity.security.AccessControlService;
+
 @RestController
 @RequestMapping("/api/customers")
 public class CustomerController {
 
     private final CustomerService customerService;
+    private final AccessControlService accessControlService;
 
-    public CustomerController(CustomerService customerService) {
+    public CustomerController(CustomerService customerService, AccessControlService accessControlService) {
         this.customerService = customerService;
+        this.accessControlService = accessControlService;
     }
 
     @GetMapping
@@ -41,7 +45,7 @@ public class CustomerController {
     public CustomerProfile createCustomer(
             @Valid @RequestBody CustomerService.CreateCustomerRequest request,
             Authentication auth) {
-        String actor = auth != null ? auth.getName() : "SYSTEM";
+        String actor = accessControlService.requireActorUsername(auth);
         return customerService.createCustomer(request, actor);
     }
 }

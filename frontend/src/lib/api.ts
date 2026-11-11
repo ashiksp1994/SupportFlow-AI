@@ -78,6 +78,8 @@ export interface KnowledgeSearchResult {
   relevanceScore: number;
   snippet: string;
   citationSnippet?: string;
+  embeddingProvider?: string;
+  fallbackUsed?: boolean;
 }
 
 export interface RagCitation {
@@ -96,6 +98,9 @@ export interface RagReplySuggestion {
   confidence: number;
   citations: RagCitation[];
   humanReviewRequired: boolean;
+  providerUsed?: string;
+  modelUsed?: string;
+  fallbackUsed?: boolean;
 }
 
 export interface AiTriageResult {
@@ -109,6 +114,9 @@ export interface AiTriageResult {
   reasoning?: string;
   recommendedQueue: string;
   autoEscalationRecommended: boolean;
+  providerUsed?: string;
+  modelUsed?: string;
+  fallbackUsed?: boolean;
 }
 
 export interface ConversationSummaryResult {
@@ -119,6 +127,9 @@ export interface ConversationSummaryResult {
   customerSentiment?: string;
   recommendedNextStep: string;
   messageCount: number;
+  providerUsed?: string;
+  modelUsed?: string;
+  fallbackUsed?: boolean;
 }
 
 export interface AiApprovalRequest {

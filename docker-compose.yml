@@ -39,7 +39,7 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-supportflow_dev_pass}
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       JWT_SECRET: ${JWT_SECRET:-U3VwcG9ydEZsb3dBSURldk9ubHlGYWxsYmFja1NlY3JldEtleUZvckxvY2FsVGVzdGluZzIwMjY=}
-      APP_DEMO_SEED_ENABLED: ${APP_DEMO_SEED_ENABLED:-true}
+      APP_DEMO_SEED_ENABLED: ${APP_DEMO_SEED_ENABLED:-false}
     ports:
       - "8080:8080"
 

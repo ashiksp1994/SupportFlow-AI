@@ -77,6 +77,7 @@ public class JwtUtils {
     private Claims extractAllClaims(String token) {
         return Jwts.parser()
                 .verifyWith(signingKey)
+                .requireIssuer(ISSUER)
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();
@@ -110,10 +111,9 @@ public class JwtUtils {
         final Claims claims = extractAllClaims(token);
         final String username = claims.getSubject();
         final String issuer = claims.getIssuer();
-        boolean issuerValid = (issuer == null || ISSUER.equals(issuer));
         return username != null
                 && username.equals(userDetails.getUsername())
-                && issuerValid
+                && ISSUER.equals(issuer)
                 && !claims.getExpiration().before(new Date());
     }
 }

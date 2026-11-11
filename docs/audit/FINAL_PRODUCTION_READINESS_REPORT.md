@@ -49,15 +49,15 @@ SupportFlow AI has undergone a complete 10-phase Git, Legacy Code, Secret, Appli
 
 - **Public `origin/main` Commit Graph:** **Zero real secrets or cloud credentials** exist in any commit on `main`.
 - **Production Configuration Guardrails:** `application-prod.properties` has no fallback `JWT_SECRET`, and `JwtUtils` throws `IllegalStateException` on startup if `SPRING_PROFILES_ACTIVE=prod` is run with a dev fallback secret.
-- **Demo Seeding Isolation:** `app.demo.seed-enabled` now defaults to `false` in `application.properties`, `application-prod.properties`, `AnalyticsService.java`, and `render.yaml`, and is enabled (`true`) only in `application-demo.properties` (`SPRING_PROFILES_ACTIVE=demo`) or when `APP_DEMO_SEED_ENABLED=true` is explicitly injected.
+- **Demo Seeding Isolation:** `app.demo.seed-enabled` defaults to `false` in `application.properties`, `application-prod.properties`, `docker-compose.yml`, `AnalyticsService.java`, and `render.yaml`. Furthermore, `seedDemoData` is annotated with `@Profile("!prod")` and `AnalyticsService.validateDemoSeedingAllowed` throws an `IllegalStateException` if `app.demo.seed-enabled=true` is ever combined with the `prod` profile.
 - **Local `legacy/physiotherapy-clinic` Branch:** Retains 2024 historical commits locally (`0ee47b5`, `c6ce415`, `503ba05`); never pushed to `origin`.
 
 ---
 
 ## 7. Security Audit (`docs/audit/SECURITY_AUDIT.md`)
 
-- **Authentication:** BCrypt password hashing, 15-minute HMAC-SHA256 JWTs with issuer verification, SHA-256 hashed refresh tokens, single-use refresh rotation, token reuse family revocation (`SECURITY_TOKEN_REUSE_DETECTED`), `POST /api/auth/logout`, and per-username brute-force login rate limiting (`429 Too Many Requests`).
-- **Authorization & Multi-Tenancy:** `@PreAuthorize("hasAnyRole('ADMIN', 'AGENT')")` on all staff endpoints; `AccessControlService.verifyTenantAccess` across all domain services; `internalNote == true` messages stripped from `CUSTOMER` responses; customer message spoofing blocked.
+- **Authentication:** BCrypt password hashing, 15-minute HMAC-SHA256 JWTs with strict `iss == "supportflow-ai"` verification (`.requireIssuer(ISSUER)` rejecting `null` or mismatched issuers), SHA-256 hashed refresh tokens, single-use refresh rotation, token reuse family revocation (`SECURITY_TOKEN_REUSE_DETECTED`), `POST /api/auth/logout`, and per-username brute-force login rate limiting (`429 Too Many Requests`).
+- **Fail-Closed Authorization & Multi-Tenancy:** `AccessControlService` is strictly fail-closed: unauthenticated/anonymous callers return `role=null` (`httpAuthenticated=false`) and throw `401 Unauthorized` on any protected service or tenant check. Internal startup seeding uses an explicit, scoped `accessControlService.runAsSystem(...)` context. Tenant-scoped `AGENT` users see only their own organisation's analytics counters (`totalTickets`, `pendingAiApprovals`, `totalOrganisations`, `totalCustomers`, `totalAuditLogs`), tickets, and AI tool approvals. `internalNote == true` messages are stripped from `CUSTOMER` responses.
 
 ---
 
@@ -88,8 +88,8 @@ SupportFlow AI has undergone a complete 10-phase Git, Legacy Code, Secret, Appli
 ## 11. AI and RAG Audit (`docs/audit/AI_AUDIT.md`)
 
 - **Honest Implementation Classification:**
-  - `LlmProviderClient` implements real HTTP calls (`java.net.http.HttpClient`, 8s timeout) to OpenAI-compatible `/chat/completions` endpoints when `AI_LLM_API_KEY` is provided, and falls back to the deterministic local grounded engine (`local-grounded`) when no API key is configured.
-  - `KnowledgeService` segments articles into `KnowledgeChunk` records (`knowledge_chunks` table) and computes hybrid 12-dimension domain-concept cosine similarity + lexical overlap with a strict minimum relevance threshold (`0.25`).
+  - `LlmProviderClient` implements real HTTP calls (`java.net.http.HttpClient`, 8s timeout) to OpenAI-compatible `/chat/completions` endpoints when `AI_LLM_API_KEY` is provided, and falls back to the deterministic local grounded engine (`local-grounded`) when no API key is configured. Every `AiTriageResult`, `RagReplySuggestion`, and `ConversationSummaryResult` exposes `providerUsed`, `modelUsed`, and `fallbackUsed`, which the React UI renders as an explicit badge.
+  - `KnowledgeService` segments articles into `KnowledgeChunk` records (`knowledge_chunks` table) and computes embeddings via `EmbeddingProviderClient` (OpenAI-compatible `/v1/embeddings` when configured, or deterministic 12-dimension domain-concept vectors stored in `TEXT` columns for dual H2/PostgreSQL compatibility) combined with lexical overlap and a strict minimum relevance threshold (`0.25`).
   - **Hallucination Refusal:** When no chunk meets the `0.25` threshold, `AiOrchestrationService.suggestReplyWithCitations` returns `citations: []` and refuses to fabricate citations (`AI_RAG_INSUFFICIENT_EVIDENCE`).
   - **Prompt Injection & Tool Safety:** `PromptInjectionGuard` redacts injection sequences and blocks tool proposals (`400 Bad Request`); `AllowedAiTool` restricts tool names to 4 audited tools and requires human approval before execution.
 
@@ -98,9 +98,8 @@ SupportFlow AI has undergone a complete 10-phase Git, Legacy Code, Secret, Appli
 ## 12. Test Results
 
 - **Backend (`cd backend && ./gradlew clean build check --no-daemon`):**
-  - Unit, Security, Multi-Tenancy, Modulith & AI Tests (`:test`): **14 passed, 0 failed** (`ProfileTest` removed; `UserModelTest` modernised).
+  - Unit, Security, Multi-Tenancy, Modulith & AI Tests (`:test`): **16 passed, 0 failed** (including strict JWT issuer validation, fail-closed unauthenticated access checks, prod demo-seeding block, and cross-tenant analytics/approvals isolation).
   - PostgreSQL 17 (`pgvector/pgvector:pg17`) Testcontainers Integration Tests (`:integrationTest`): **1 suite passed, 0 failed**.
-  - JaCoCo Coverage Report (`backend/build/reports/jacoco/test/jacocoTestReport.xml`): **96.9% Class**, **74.8% Method**, **73.3% Instruction**, **72.8% Line**.
 - **Frontend (`cd frontend && npm ci && npm test && npm run build`):**
   - Vitest (`src/test/App.test.tsx`): **4 passed, 0 failed**.
   - Production Bundle (`tsc -b && vite build`): **Succeeded (`0` errors)**.
@@ -152,7 +151,7 @@ SupportFlow AI has undergone a complete 10-phase Git, Legacy Code, Secret, Appli
 ## 17. Deployment Instructions (Summary — Full Details in `docs/DEPLOYMENT.md`)
 
 1. **Neon PostgreSQL:** Create a PostgreSQL 17 project in Neon and copy the SSL JDBC URL (`jdbc:postgresql://<ep>.neon.tech/neondb?sslmode=require`).
-2. **Render Backend:** Deploy `render.yaml` (`backend/Dockerfile`), set `SPRING_PROFILES_ACTIVE=prod` (or `prod,demo` if demo seed data is desired), `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`, `JWT_SECRET`, and `CORS_ALLOWED_ORIGINS`.
+2. **Render Backend:** Deploy `render.yaml` (`backend/Dockerfile`), set `SPRING_PROFILES_ACTIVE=prod`, `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`, `JWT_SECRET`, and `CORS_ALLOWED_ORIGINS`. (For a non-production portfolio demo instance, use `SPRING_PROFILES_ACTIVE=demo` with `APP_DEMO_SEED_ENABLED=true`; never combine `prod` and demo seeding.)
 3. **Vercel Frontend:** Import `frontend/` in Vercel (`npm ci`, `npm run build`, output `dist`) and set `VITE_API_BASE_URL` to the Render service URL.
 
 ---

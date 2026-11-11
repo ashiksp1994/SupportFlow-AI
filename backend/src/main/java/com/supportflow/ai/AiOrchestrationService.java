@@ -5,6 +5,8 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import jakarta.validation.constraints.NotBlank;
 
@@ -28,6 +30,7 @@ import com.supportflow.tickets.TicketService;
  *   2. Source-grounded RAG reply generation with chunk citations & explicit insufficient-evidence refusal
  *   3. Multi-turn conversation summarisation
  *   4. Controlled AI agent tool proposals with strict allowlist validation & human-in-the-loop approval execution
+ * All AI responses explicitly report {@code providerUsed}, {@code modelUsed}, and {@code fallbackUsed}.
  */
 @Service
 public class AiOrchestrationService {
@@ -41,7 +44,10 @@ public class AiOrchestrationService {
             double confidence,
             String rationale,
             String recommendedQueue,
-            boolean autoEscalationRecommended
+            boolean autoEscalationRecommended,
+            String providerUsed,
+            String modelUsed,
+            boolean fallbackUsed
     ) {}
 
     public record CitationItem(
@@ -58,7 +64,10 @@ public class AiOrchestrationService {
             String suggestedReply,
             double confidence,
             List<CitationItem> citations,
-            boolean humanReviewRequired
+            boolean humanReviewRequired,
+            String providerUsed,
+            String modelUsed,
+            boolean fallbackUsed
     ) {}
 
     public record ConversationSummaryResult(
@@ -68,7 +77,10 @@ public class AiOrchestrationService {
             List<String> keyPoints,
             String customerSentiment,
             String recommendedNextStep,
-            int messageCount
+            int messageCount,
+            String providerUsed,
+            String modelUsed,
+            boolean fallbackUsed
     ) {}
 
     public record ProposeToolCallRequest(
@@ -112,6 +124,7 @@ public class AiOrchestrationService {
 
     @Transactional
     public AiTriageResult triageTicket(Long ticketId, String actor) {
+        accessControlService.requireStaff();
         Ticket ticket = ticketService.findById(ticketId);
         String rawText = ticket.getSubject() + " " + ticket.getDescription();
         PromptInjectionGuard.PromptSafetyResult safety = promptInjectionGuard.inspect(rawText);
@@ -164,7 +177,7 @@ public class AiOrchestrationService {
         };
 
         double confidence = safety.safe() ? (recommendEscalation ? 0.94 : 0.89) : 0.65;
-        String rationale = String.format(
+        String deterministicRationale = String.format(
                 Locale.ROOT,
                 "Classified as %s (%s priority, sentiment=%s) routed to %s.%s",
                 category,
@@ -172,6 +185,12 @@ public class AiOrchestrationService {
                 sentiment,
                 queue,
                 safety.safe() ? "" : " [WARN: Sanitized untrusted prompt-injection sequence]");
+
+        LlmProviderClient.LlmCompletionResult llmResult = llmProviderClient.completeWithFallback(
+                "You are an enterprise support triage copilot. Provide a concise 1-sentence triage rationale for the ticket classification.",
+                "Ticket: " + safety.sanitizedText() + "\nClassification: category=" + category + ", priority=" + priority + ", queue=" + queue,
+                deterministicRationale
+        );
 
         ticket.setCategory(category);
         ticket.setPriority(priority);
@@ -181,7 +200,8 @@ public class AiOrchestrationService {
         ticketService.saveTicket(ticket);
 
         auditService.recordEvent("AI_TICKET_TRIAGED", actor, "TICKET", ticket.getTicketKey(),
-                "AI classified ticket: category=" + category + ", priority=" + priority + ", confidence=" + confidence);
+                "AI classified ticket: category=" + category + ", priority=" + priority + ", confidence=" + confidence
+                        + ", provider=" + llmResult.provider() + ", fallback=" + llmResult.fallbackUsed());
 
         return new AiTriageResult(
                 ticket.getId(),
@@ -190,14 +210,18 @@ public class AiOrchestrationService {
                 priority,
                 sentiment,
                 confidence,
-                rationale,
+                llmResult.content(),
                 queue,
-                recommendEscalation
+                recommendEscalation,
+                llmResult.provider(),
+                llmResult.model(),
+                llmResult.fallbackUsed()
         );
     }
 
     @Transactional
     public RagReplySuggestion suggestReplyWithCitations(Long ticketId, String actor) {
+        accessControlService.requireStaff();
         Ticket ticket = ticketService.findById(ticketId);
         List<ConversationMessage> messages = conversationService.getMessagesForTicket(ticketId);
 
@@ -242,6 +266,9 @@ public class AiOrchestrationService {
                     insufficientEvidenceReply,
                     0.20,
                     List.of(),
+                    true,
+                    "local-grounded-guardrail",
+                    "supportflow-grounded-v2",
                     true
             );
         }
@@ -268,7 +295,8 @@ public class AiOrchestrationService {
 
         double confidence = citations.getFirst().relevanceScore();
         auditService.recordEvent("AI_RAG_REPLY_GENERATED", actor, "TICKET", ticket.getTicketKey(),
-                "Generated RAG reply with " + citations.size() + " citation(s) via " + llmResult.provider());
+                "Generated RAG reply with " + citations.size() + " citation(s) via " + llmResult.provider()
+                        + " (fallback=" + llmResult.fallbackUsed() + ")");
 
         return new RagReplySuggestion(
                 ticket.getId(),
@@ -276,12 +304,16 @@ public class AiOrchestrationService {
                 llmResult.content(),
                 confidence,
                 citations,
-                true
+                true,
+                llmResult.provider(),
+                llmResult.model(),
+                llmResult.fallbackUsed()
         );
     }
 
     @Transactional
     public ConversationSummaryResult summarizeConversation(Long ticketId, String actor) {
+        accessControlService.requireStaff();
         Ticket ticket = ticketService.findById(ticketId);
         List<ConversationMessage> messages = conversationService.getMessagesForTicket(ticketId);
 
@@ -297,7 +329,7 @@ public class AiOrchestrationService {
                 ? "Verify customer remediation using RAG-cited runbook or approve Tier-3 engineering escalation."
                 : "Send grounded response suggestion and monitor customer confirmation within SLA window.";
 
-        String execSummary = String.format(
+        String deterministicSummary = String.format(
                 Locale.ROOT,
                 "%s (%s) reported '%s' [%s/%s]. %d conversation message(s) exchanged. Assigned agent: %s.",
                 ticket.getCustomerName() != null ? ticket.getCustomerName() : "Customer",
@@ -309,20 +341,33 @@ public class AiOrchestrationService {
                 ticket.getAssignedAgentUsername() != null ? ticket.getAssignedAgentUsername() : "Unassigned"
         );
 
-        ticket.setAiSummary(execSummary);
+        PromptInjectionGuard.PromptSafetyResult safety =
+                promptInjectionGuard.inspect(ticket.getSubject() + " " + String.join(" | ", keyPoints));
+
+        LlmProviderClient.LlmCompletionResult llmResult = llmProviderClient.completeWithFallback(
+                "You are an enterprise support executive summariser. Produce a concise factual 2-sentence summary of the incident thread.",
+                safety.sanitizedText(),
+                deterministicSummary
+        );
+
+        ticket.setAiSummary(llmResult.content());
         ticketService.saveTicket(ticket);
 
         auditService.recordEvent("AI_CONVERSATION_SUMMARIZED", actor, "TICKET", ticket.getTicketKey(),
-                "Generated executive conversation summary (" + messages.size() + " messages)");
+                "Generated executive conversation summary (" + messages.size() + " messages) via " + llmResult.provider()
+                        + " (fallback=" + llmResult.fallbackUsed() + ")");
 
         return new ConversationSummaryResult(
                 ticket.getId(),
                 ticket.getTicketKey(),
-                execSummary,
+                llmResult.content(),
                 keyPoints,
                 ticket.getSentiment(),
                 nextStep,
-                messages.size()
+                messages.size(),
+                llmResult.provider(),
+                llmResult.model(),
+                llmResult.fallbackUsed()
         );
     }
 
@@ -381,10 +426,21 @@ public class AiOrchestrationService {
     @Transactional(readOnly = true)
     public List<AiApprovalRequest> listApprovals(String status) {
         accessControlService.requireStaff();
-        if (status != null && !status.isBlank() && !"ALL".equalsIgnoreCase(status)) {
-            return approvalRepository.findByStatusOrderByCreatedAtDesc(status.trim().toUpperCase(Locale.ROOT));
+        AccessControlService.CallerContext caller = accessControlService.currentCaller();
+        List<AiApprovalRequest> approvals = (status != null && !status.isBlank() && !"ALL".equalsIgnoreCase(status))
+                ? approvalRepository.findByStatusOrderByCreatedAtDesc(status.trim().toUpperCase(Locale.ROOT))
+                : approvalRepository.findAllByOrderByCreatedAtDesc();
+
+        if (caller.isAdmin() || caller.organisationId() == null) {
+            return approvals;
         }
-        return approvalRepository.findAllByOrderByCreatedAtDesc();
+
+        Set<Long> accessibleTicketIds = ticketService.findAll(null).stream()
+                .map(Ticket::getId)
+                .collect(Collectors.toSet());
+        return approvals.stream()
+                .filter(a -> accessibleTicketIds.contains(a.getTicketId()))
+                .toList();
     }
 
     @Transactional
